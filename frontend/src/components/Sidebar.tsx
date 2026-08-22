@@ -19,6 +19,7 @@ const settingsLinks: { to: string; label: string; children?: { to: string; label
     label: "Metadata Refreshes",
     children: [{ to: "/settings/unmatched-files", label: "Unmatched Files" }],
   },
+  { to: "/settings/abs-integration", label: "ABS Integration" },
   { to: "/settings/irc", label: "IRC" },
   { to: "/settings/logs", label: "Logs" },
 ];

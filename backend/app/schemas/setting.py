@@ -63,6 +63,16 @@ class SettingsResponse(BaseModel):
     google_books_api_key: str
     google_books_api_key_from_env: bool = False
     google_books_api_key_source: Literal["database", "environment", "none"] = "none"
+    abs_enabled: bool = False
+    abs_url: str = ""
+    abs_url_from_env: bool = False
+    abs_url_source: Literal["database", "environment", "none"] = "none"
+    abs_api_key: str = ""
+    abs_api_key_from_env: bool = False
+    abs_api_key_source: Literal["database", "environment", "none"] = "none"
+    abs_library_id: str = ""
+    abs_library_id_source: Literal["database", "environment", "none"] = "none"
+    prefer_abs_metadata: bool = False
     library_path: str
     last_scan_at: str | None
     last_scan_summary: ScanSummary | None = None
@@ -74,6 +84,11 @@ class SettingsResponse(BaseModel):
 class SettingsUpdate(BaseModel):
     hardcover_api_key: str | None = None
     google_books_api_key: str | None = None
+    abs_enabled: bool | None = None
+    abs_url: str | None = None
+    abs_api_key: str | None = None
+    abs_library_id: str | None = None
+    prefer_abs_metadata: bool | None = None
     scan_interval_hours: int | None = None
     log_level: str | None = None
     visibility_categories: VisibilityCategories | None = None

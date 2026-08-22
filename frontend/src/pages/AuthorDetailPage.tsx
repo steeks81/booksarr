@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useAuthor, useAuthorRefreshStatus, useMergeAuthorDirectories, useRefreshAuthor, useRemoveAuthor } from "../api/authors";
+import { useSettings } from "../api/settings";
 import { getImageUrl } from "../types";
 import type { BookInAuthor, SeriesInAuthor, UnmatchedLocalFile } from "../types";
 import BookCard from "../components/BookCard";
@@ -59,6 +60,7 @@ export default function AuthorDetailPage() {
   const { id } = useParams<{ id: string }>();
   const authorId = Number(id);
   const { data: author, isLoading } = useAuthor(authorId);
+  const { data: settings } = useSettings();
   const refreshAuthor = useRefreshAuthor();
   const { data: authorRefreshStatus } = useAuthorRefreshStatus();
   const removeAuthor = useRemoveAuthor();
@@ -441,6 +443,21 @@ export default function AuthorDetailPage() {
                     >
                       Fix Match
                     </button>
+                    {settings?.abs_enabled && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRefreshMenuOpen(false);
+                          if (settings?.abs_url && author?.name) {
+                            const absUrl = settings.abs_url.replace(/\/$/, "");
+                            window.open(`${absUrl}/library/${settings.abs_library_id}/bookshelf?filter=authors.${encodeURIComponent(author.name)}`, "_blank", "noopener,noreferrer");
+                          }
+                        }}
+                        className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                      >
+                        Open in Audiobookshelf
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

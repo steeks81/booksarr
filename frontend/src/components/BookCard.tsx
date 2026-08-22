@@ -6,6 +6,8 @@ import { getBookCoverPresentation, getImageUrl } from "../types";
 import CoverPickerDialog from "./CoverPickerDialog";
 import IrcSearchDialog from "./IrcSearchDialog";
 import { useRefreshBook, useSetBookVisibility } from "../api/books";
+import { useAbsLookupBook } from "../api/abs";
+import { useSettings } from "../api/settings";
 import BookDownloadSelector from "./BookDownloadSelector";
 import MetadataInfoDialog from "./MetadataInfoDialog";
 
@@ -66,11 +68,14 @@ export default function BookCard({
 }) {
   const refreshBook = useRefreshBook();
   const setBookVisibility = useSetBookVisibility();
+  const absLookup = useAbsLookupBook();
+  const { data: settings } = useSettings();
   const [coverPickerOpen, setCoverPickerOpen] = useState(false);
   const [ircSearchOpen, setIrcSearchOpen] = useState(false);
   const [metadataInfoOpen, setMetadataInfoOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
+  const [absLookupPending, setAbsLookupPending] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuContentRef = useRef<HTMLDivElement | null>(null);
@@ -271,6 +276,29 @@ export default function BookCard({
                 >
                   Search IRC
                 </button>
+                {book.is_owned && book.local_files.length > 0 && settings?.abs_enabled && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const filePath = book.local_files[0]?.file_path;
+                      if (!filePath) return;
+                      setAbsLookupPending(true);
+                      try {
+                        const result = await absLookup.mutateAsync(filePath);
+                        if (result.found && result.abs_url) {
+                          closeMenu();
+                          window.open(result.abs_url, "_blank", "noopener,noreferrer");
+                        }
+                      } finally {
+                        setAbsLookupPending(false);
+                      }
+                    }}
+                    disabled={absLookupPending}
+                    className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {absLookupPending ? "Looking up..." : "Open in Audiobookshelf"}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {

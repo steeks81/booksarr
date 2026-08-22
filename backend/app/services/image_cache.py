@@ -21,7 +21,14 @@ MIN_COVER_BYTES = 20_000  # 20KB
 _MIN_REMOTE_COVER_BYTES = 3_000  # 3KB
 
 
-async def download_image(url: str, category: str, filename: str, *, overwrite: bool = False) -> str | None:
+async def download_image(
+    url: str,
+    category: str,
+    filename: str,
+    *,
+    overwrite: bool = False,
+    auth_header: str | None = None,
+) -> str | None:
     """Download an image and cache it. Returns relative cache path."""
     if not url:
         return None
@@ -39,10 +46,13 @@ async def download_image(url: str, category: str, filename: str, *, overwrite: b
             category,
             filename,
         )
+        headers = dict(DEFAULT_HEADERS)
+        if auth_header:
+            headers["Authorization"] = auth_header
         async with httpx.AsyncClient(
             timeout=15.0,
             follow_redirects=True,
-            headers=DEFAULT_HEADERS,
+            headers=headers,
         ) as client:
             resp = await client.get(url)
             resp.raise_for_status()
@@ -64,10 +74,17 @@ async def cache_author_image(
     source: str = "hc",
     *,
     overwrite: bool = False,
+    auth_header: str | None = None,
 ) -> str | None:
     ext = _get_ext(url)
     safe_source = source.lower().replace(" ", "_")
-    return await download_image(url, "authors", f"{safe_source}_{author_key}{ext}", overwrite=overwrite)
+    return await download_image(
+        url,
+        "authors",
+        f"{safe_source}_{author_key}{ext}",
+        overwrite=overwrite,
+        auth_header=auth_header,
+    )
 
 
 async def cache_book_image(hardcover_id: int, url: str) -> str | None:

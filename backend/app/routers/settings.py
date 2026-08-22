@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.config import BOOKS_DIR, CONFIG_DIR, HARDCOVER_API_KEY, GOOGLE_BOOKS_API_KEY
+from backend.app.config import BOOKS_DIR, CONFIG_DIR, HARDCOVER_API_KEY, GOOGLE_BOOKS_API_KEY, ABS_URL, ABS_API_KEY, ABS_LIBRARY_ID
 from backend.app.database import get_db
 from backend.app.models import Setting
 from backend.app.schemas.setting import (
@@ -46,6 +46,25 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     google_key = db_google_key or GOOGLE_BOOKS_API_KEY
     google_source = "database" if db_google_key else ("environment" if google_from_env else "none")
 
+    # ABS integration settings
+    db_abs_url = settings.get("abs_url", "")
+    abs_url_from_env = bool(ABS_URL)
+    abs_url = db_abs_url or ABS_URL
+    abs_url_source = "database" if db_abs_url else ("environment" if abs_url_from_env else "none")
+
+    db_abs_key = settings.get("abs_api_key", "")
+    abs_key_from_env = bool(ABS_API_KEY)
+    abs_key = db_abs_key or ABS_API_KEY
+    abs_key_source = "database" if db_abs_key else ("environment" if abs_key_from_env else "none")
+
+    db_abs_library_id = settings.get("abs_library_id", "")
+    abs_library_id_from_env = bool(ABS_LIBRARY_ID)
+    abs_library_id = db_abs_library_id or ABS_LIBRARY_ID
+    abs_library_id_source = "database" if db_abs_library_id else ("environment" if abs_library_id_from_env else "none")
+
+    abs_enabled = settings.get("abs_enabled", "false").lower() == "true"
+    prefer_abs_metadata = settings.get("prefer_abs_metadata", "false").lower() == "true"
+
     last_scan = settings.get("last_scan_at")
     last_scan_summary = None
     raw_summary = settings.get("last_scan_summary")
@@ -72,6 +91,16 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         google_books_api_key=_mask(google_key),
         google_books_api_key_from_env=google_from_env,
         google_books_api_key_source=google_source,
+        abs_enabled=abs_enabled,
+        abs_url=abs_url,
+        abs_url_from_env=abs_url_from_env,
+        abs_url_source=abs_url_source,
+        abs_api_key=_mask(abs_key),
+        abs_api_key_from_env=abs_key_from_env,
+        abs_api_key_source=abs_key_source,
+        abs_library_id=abs_library_id,
+        abs_library_id_source=abs_library_id_source,
+        prefer_abs_metadata=prefer_abs_metadata,
         library_path=str(BOOKS_DIR),
         last_scan_at=last_scan,
         last_scan_summary=last_scan_summary,
@@ -88,6 +117,21 @@ async def update_settings(body: SettingsUpdate, db: AsyncSession = Depends(get_d
 
     if body.google_books_api_key is not None:
         await _upsert_setting(db, "google_books_api_key", body.google_books_api_key)
+
+    if body.abs_url is not None:
+        await _upsert_setting(db, "abs_url", body.abs_url)
+
+    if body.abs_api_key is not None:
+        await _upsert_setting(db, "abs_api_key", body.abs_api_key)
+
+    if body.abs_enabled is not None:
+        await _upsert_setting(db, "abs_enabled", "true" if body.abs_enabled else "false")
+
+    if body.abs_library_id is not None:
+        await _upsert_setting(db, "abs_library_id", body.abs_library_id)
+
+    if body.prefer_abs_metadata is not None:
+        await _upsert_setting(db, "prefer_abs_metadata", "true" if body.prefer_abs_metadata else "false")
 
     if body.scan_interval_hours is not None:
         await _upsert_setting(db, "scan_interval_hours", str(body.scan_interval_hours))

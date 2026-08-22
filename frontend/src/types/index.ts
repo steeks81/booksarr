@@ -396,12 +396,35 @@ export interface Settings {
   google_books_api_key: string;
   google_books_api_key_from_env: boolean;
   google_books_api_key_source: "database" | "environment" | "none";
+  abs_enabled: boolean;
+  abs_url: string;
+  abs_url_from_env: boolean;
+  abs_url_source: "database" | "environment" | "none";
+  abs_api_key: string;
+  abs_api_key_from_env: boolean;
+  abs_api_key_source: "database" | "environment" | "none";
+  abs_library_id: string;
+  abs_library_id_source: "database" | "environment" | "none";
+  prefer_abs_metadata: boolean;
   library_path: string;
   last_scan_at: string | null;
   last_scan_summary: ScanSummary | null;
   scan_interval_hours: number;
   log_level: string;
   visibility_categories: VisibilityCategories;
+}
+
+export interface AbsLibrary {
+  id: string;
+  name: string;
+  mediaType: string;
+}
+
+export interface AbsTestConnectionResponse {
+  success: boolean;
+  message: string;
+  server_version: string | null;
+  libraries: AbsLibrary[];
 }
 
 export interface VisibilityCategories {

@@ -15,6 +15,11 @@ export function useUpdateSettings() {
     mutationFn: (body: {
       hardcover_api_key?: string;
       google_books_api_key?: string;
+      abs_enabled?: boolean;
+      abs_url?: string;
+      abs_api_key?: string;
+      abs_library_id?: string;
+      prefer_abs_metadata?: boolean;
       scan_interval_hours?: number;
       log_level?: string;
       visibility_categories?: VisibilityCategories;

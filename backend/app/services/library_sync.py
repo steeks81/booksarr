@@ -48,6 +48,12 @@ from backend.app.services.google_books import (
     GoogleBooksLookupError,
     GoogleBooksThrottledError,
 )
+from backend.app.services.abs_sync import (
+    get_abs_settings,
+    fetch_abs_authors,
+    sync_author_image_from_abs,
+    AbsAuthor,
+)
 from backend.app.utils.epub_cover import get_image_dimensions
 from backend.app.utils.api_usage import begin_api_usage_batch, clear_api_usage_batch, flush_api_usage_batch
 from backend.app.utils.author_name import normalize_author_key, primary_author_name
@@ -830,8 +836,12 @@ def _local_path_title_candidates(book_file: BookFile) -> list[str]:
     path_parts = [part for part in book_file.file_path.split("/") if part]
     candidates: list[str] = []
 
+    # For nested structures like Author/Series/Book/file.epub, use the book folder (second-to-last)
+    # For flat structures like Author/Book/file.epub, use the book folder (second part)
     if len(path_parts) >= 3:
-        candidates.append(_clean_title_text(path_parts[1]))
+        # Use the parent folder of the file (the book folder, not the series folder)
+        book_folder = path_parts[-2]  # Second-to-last part is the book folder
+        candidates.append(_clean_title_text(book_folder))
     elif len(path_parts) == 2:
         second_part = path_parts[1]
         if (book_file.file_format or "").lower() == "audiobook" and not Path(second_part).suffix:
@@ -2053,6 +2063,21 @@ async def run_full_sync(force: bool = False):
             client = HardcoverClient(api_key)
             ol_client = OpenLibraryClient()
             wikimedia_client = WikimediaClient()
+            
+            # Fetch ABS authors if integration is enabled
+            abs_authors: list[AbsAuthor] = []
+            abs_url = ""
+            abs_api_key = ""
+            abs_prefer = False
+            try:
+                abs_url, abs_api_key, abs_library_id, abs_enabled, abs_prefer = await get_abs_settings(db)
+                if abs_enabled and abs_url and abs_api_key and abs_library_id:
+                    abs_authors = await fetch_abs_authors(abs_url, abs_api_key, abs_library_id)
+                    if abs_authors:
+                        logger.info("Loaded %d authors from ABS for image matching", len(abs_authors))
+            except Exception as e:
+                logger.warning("Failed to fetch ABS authors: %s", e)
+            
             try:
                 hardcover_throttled = False
                 # Phase 2: Match new authors to Hardcover
@@ -2192,6 +2217,17 @@ async def run_full_sync(force: bool = False):
                                 summary.wikimedia.record_failure("cache_failed", attempted=False)
                         else:
                             summary.wikimedia.record_failure(wikimedia_lookup.reason)
+
+                    # ABS author image fallback (or override if prefer_abs is True)
+                    if abs_authors and (not author.image_cached_path or abs_prefer) and not author_has_manual_image:
+                        try:
+                            updated = await sync_author_image_from_abs(
+                                author, abs_url, abs_api_key, abs_authors, abs_prefer
+                            )
+                            if updated:
+                                logger.debug("Got author image from ABS for %s", author.name)
+                        except Exception as e:
+                            logger.debug("ABS author image lookup failed for %s: %s", author.name, e)
 
                     progress = 20.0 + (30.0 * (i + 1) / max(total_authors, 1))
                     scan_status.progress = progress

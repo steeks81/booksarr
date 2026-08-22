@@ -11,6 +11,11 @@ PORT = int(os.environ.get("PORT", "8889"))
 HARDCOVER_API_KEY = os.environ.get("HARDCOVER_API_KEY", "")
 GOOGLE_BOOKS_API_KEY = os.environ.get("GOOGLE_BOOKS_API_KEY", "")
 
+# Audiobookshelf integration
+ABS_URL = os.environ.get("ABS_URL", "")
+ABS_API_KEY = os.environ.get("ABS_API_KEY", "")
+ABS_LIBRARY_ID = os.environ.get("ABS_LIBRARY_ID", "")
+
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 (CONFIG_DIR / "cache" / "authors").mkdir(parents=True, exist_ok=True)
 (CONFIG_DIR / "cache" / "books").mkdir(parents=True, exist_ok=True)

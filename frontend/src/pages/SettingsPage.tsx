@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { useSettings, useUpdateSettings, useScanStatus, useTriggerScan, useResetData, useApiUsage } from "../api/settings";
+import { useAbsSyncAuthorImages, useAbsSyncStatus } from "../api/abs";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ScanSummary, VisibilityCategories } from "../types";
 
@@ -80,7 +81,7 @@ const EMPTY_SCAN_SOURCE = {
   failure_reasons: {},
 };
 
-type SettingsSection = "api-keys" | "profiles" | "metadata-refreshes";
+type SettingsSection = "api-keys" | "profiles" | "metadata-refreshes" | "abs-integration";
 
 const SECTION_META: Record<SettingsSection, { title: string; description: string }> = {
   "api-keys": {
@@ -94,6 +95,10 @@ const SECTION_META: Record<SettingsSection, { title: string; description: string
   "metadata-refreshes": {
     title: "Metadata Refreshes",
     description: "Run scans, manage refresh cadence, and reset metadata state when needed.",
+  },
+  "abs-integration": {
+    title: "Audiobookshelf Integration",
+    description: "Connect to Audiobookshelf to sync author images and metadata.",
   },
 };
 
@@ -123,7 +128,25 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
   });
   const [visibilityCategories, setVisibilityCategories] = useState<VisibilityCategories | null>(null);
   const [visibilitySaved, setVisibilitySaved] = useState(false);
+  const [absUrl, setAbsUrl] = useState("");
+  const [absApiKey, setAbsApiKey] = useState("");
+  const [showAbsKey, setShowAbsKey] = useState(false);
+  const [absSaved, setAbsSaved] = useState(false);
+  const [absEnabled, setAbsEnabled] = useState(false);
+  const [absLibraryId, setAbsLibraryId] = useState("");
+  const [preferAbsMetadata, setPreferAbsMetadata] = useState(false);
+  const [absTestResult, setAbsTestResult] = useState<{
+    success: boolean;
+    message: string;
+    server_version: string | null;
+    libraries: Array<{ id: string; name: string; mediaType: string }>;
+  } | null>(null);
+  const [absTestLoading, setAbsTestLoading] = useState(false);
+  const [absSyncing, setAbsSyncing] = useState(false);
   const queryClient = useQueryClient();
+
+  const syncAuthorImages = useAbsSyncAuthorImages();
+  const { data: absSyncStatus } = useAbsSyncStatus(absSyncing);
 
   const { data: scanStatus } = useScanStatus(true);
   const isScanning = scanStatus?.status === "scanning";
@@ -141,6 +164,14 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
       setVisibilityCategories(settings.visibility_categories);
     }
   }, [settings?.visibility_categories]);
+
+  useEffect(() => {
+    if (settings) {
+      setAbsEnabled(settings.abs_enabled ?? false);
+      setAbsLibraryId(settings.abs_library_id ?? "");
+      setPreferAbsMetadata(settings.prefer_abs_metadata ?? false);
+    }
+  }, [settings]);
 
   useEffect(() => {
     if (!settings?.last_scan_summary || typeof window === "undefined") return;
@@ -199,6 +230,50 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
     await updateSettings.mutateAsync({ visibility_categories: visibilityCategories });
     setVisibilitySaved(true);
     setTimeout(() => setVisibilitySaved(false), 3000);
+  };
+
+  const handleSaveAbsSettings = async () => {
+    const updates: {
+      abs_enabled?: boolean;
+      abs_url?: string;
+      abs_api_key?: string;
+      abs_library_id?: string;
+      prefer_abs_metadata?: boolean;
+    } = {
+      abs_enabled: absEnabled,
+      prefer_abs_metadata: preferAbsMetadata,
+    };
+    if (absUrl.trim()) updates.abs_url = absUrl;
+    if (absApiKey.trim()) updates.abs_api_key = absApiKey;
+    if (absLibraryId) updates.abs_library_id = absLibraryId;
+    await updateSettings.mutateAsync(updates);
+    setAbsSaved(true);
+    setAbsUrl("");
+    setAbsApiKey("");
+    setTimeout(() => setAbsSaved(false), 3000);
+  };
+
+  const handleAbsTestConnection = async () => {
+    setAbsTestLoading(true);
+    setAbsTestResult(null);
+    try {
+      const testUrl = absUrl.trim() || settings?.abs_url || "";
+      const testKey = absApiKey.trim() || undefined;
+      const response = await fetch("/api/abs/test-connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: testUrl || undefined, api_key: testKey }),
+      });
+      const result = await response.json();
+      setAbsTestResult(result);
+      if (result.success && result.libraries?.length === 1 && !absLibraryId) {
+        setAbsLibraryId(result.libraries[0].id);
+      }
+    } catch {
+      setAbsTestResult({ success: false, message: "Connection test failed", server_version: null, libraries: [] });
+    } finally {
+      setAbsTestLoading(false);
+    }
   };
 
   const handleScan = async (force?: boolean) => {
@@ -740,6 +815,224 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
               Cancel
             </button>
           </div>
+        )}
+      </div>
+        </>
+      )}
+
+      {section === "abs-integration" && (
+        <>
+      {/* ABS Connection */}
+      <div className="bg-slate-800 rounded-lg border border-slate-700 p-6 mb-6">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <h3 className="text-lg font-semibold mb-2">Connection</h3>
+            <p className="text-sm text-slate-400">
+              Connect to your Audiobookshelf instance to sync author images and enable "Open in ABS" links.
+            </p>
+          </div>
+          <div className="text-right">
+            {absTestResult && (
+              <>
+                <div className={`text-sm font-medium ${absTestResult.success ? "text-emerald-400" : "text-red-400"}`}>
+                  {absTestResult.success ? "connected" : "error"}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">{absTestResult.message}</div>
+              </>
+            )}
+            {!absTestResult && settings?.abs_url && settings?.abs_api_key && (
+              <div className="text-xs text-slate-500">Click "Test Connection" to verify</div>
+            )}
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2 mt-6">
+          <label className="flex items-center gap-3 text-sm text-slate-200 md:col-span-2">
+            <input
+              type="checkbox"
+              checked={absEnabled}
+              onChange={(e) => setAbsEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-500 bg-slate-700 text-emerald-500 focus:ring-emerald-500"
+            />
+            Enable Audiobookshelf integration
+          </label>
+
+          <div>
+            <div className="text-xs text-slate-400 mb-1">Server URL</div>
+            {settings?.abs_url && (
+              <div className="text-xs text-slate-500 mb-1">
+                Current: {settings.abs_url}
+                {settings.abs_url_source === "environment" && (
+                  <span className="ml-1 text-blue-400">(ENV)</span>
+                )}
+              </div>
+            )}
+            <input
+              value={absUrl}
+              onChange={(e) => setAbsUrl(e.target.value)}
+              placeholder={settings?.abs_url || "http://audiobookshelf:80"}
+              className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-slate-200"
+            />
+          </div>
+
+          <div>
+            <div className="text-xs text-slate-400 mb-1">API Token</div>
+            {settings?.abs_api_key && (
+              <div className="text-xs text-slate-500 mb-1">
+                Current: {settings.abs_api_key}
+                {settings.abs_api_key_source === "environment" && (
+                  <span className="ml-1 text-blue-400">(ENV)</span>
+                )}
+              </div>
+            )}
+            <div className="relative">
+              <input
+                type={showAbsKey ? "text" : "password"}
+                value={absApiKey}
+                onChange={(e) => setAbsApiKey(e.target.value)}
+                placeholder="Enter new API token to update..."
+                className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 pr-10 text-sm text-slate-200"
+              />
+              <button
+                onClick={() => setShowAbsKey(!showAbsKey)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  {showAbsKey ? (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21" />
+                  ) : (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  )}
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div className="md:col-span-2">
+            <div className="text-xs text-slate-400 mb-1">Library</div>
+            {absTestResult?.libraries && absTestResult.libraries.length > 0 ? (
+              <select
+                value={absLibraryId}
+                onChange={(e) => setAbsLibraryId(e.target.value)}
+                className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-slate-200"
+              >
+                <option value="">Select a library...</option>
+                {absTestResult.libraries.map((lib) => (
+                  <option key={lib.id} value={lib.id}>
+                    {lib.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="text-sm text-slate-500">
+                {settings?.abs_library_id ? (
+                  <>
+                    Current: <code className="text-slate-400">{settings.abs_library_id}</code>
+                    <span className="ml-2">(test connection to see library name)</span>
+                  </>
+                ) : (
+                  "Test connection to see available libraries"
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <button
+            onClick={handleSaveAbsSettings}
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
+          >
+            Save
+          </button>
+          <button
+            onClick={handleAbsTestConnection}
+            disabled={absTestLoading || (!settings?.abs_url && !absUrl.trim())}
+            className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {absTestLoading ? "Testing..." : "Test Connection"}
+          </button>
+          {absSaved && <span className="text-sm text-emerald-400">Settings saved!</span>}
+        </div>
+      </div>
+
+      {/* Metadata Preferences */}
+      <div className="bg-slate-800 rounded-lg border border-slate-700 p-6 mb-6">
+        <h3 className="text-lg font-semibold mb-2">Metadata Preferences</h3>
+        <p className="text-sm text-slate-400 mb-4">
+          Control how Audiobookshelf metadata is used when enriching your library.
+        </p>
+
+        <label className="flex items-center gap-3 text-sm text-slate-200">
+          <input
+            type="checkbox"
+            checked={preferAbsMetadata}
+            onChange={(e) => setPreferAbsMetadata(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-500 bg-slate-700 text-emerald-500 focus:ring-emerald-500"
+          />
+          Prefer ABS metadata
+        </label>
+        <p className="text-xs text-slate-500 mt-2 ml-7">
+          When enabled, author images and book covers from ABS take priority over Hardcover.
+          When disabled, ABS data only fills gaps where Hardcover data is missing.
+        </p>
+      </div>
+
+      {/* Sync Actions */}
+      <div className="bg-slate-800 rounded-lg border border-slate-700 p-6">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <h3 className="text-lg font-semibold mb-2">Sync Actions</h3>
+            <p className="text-sm text-slate-400">
+              Sync metadata from Audiobookshelf to enrich your library.
+            </p>
+          </div>
+          {absSyncStatus && absSyncStatus.status !== "idle" && (
+            <div className="text-right">
+              <div className={`text-sm font-medium ${
+                absSyncStatus.status === "completed" ? "text-emerald-400" :
+                absSyncStatus.status === "failed" ? "text-red-400" :
+                "text-amber-400"
+              }`}>
+                {absSyncStatus.status}
+              </div>
+              <div className="text-xs text-slate-500 mt-1">{absSyncStatus.message}</div>
+              {absSyncStatus.status === "syncing" && absSyncStatus.total_authors > 0 && (
+                <div className="text-xs text-slate-500">
+                  {absSyncStatus.processed} / {absSyncStatus.total_authors} authors
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            onClick={async () => {
+              setAbsSyncing(true);
+              try {
+                await syncAuthorImages.mutateAsync();
+              } finally {
+                // Keep polling for a bit to show final status
+                setTimeout(() => setAbsSyncing(false), 2000);
+              }
+            }}
+            disabled={!absEnabled || !settings?.abs_url || !settings?.abs_api_key || !absLibraryId || syncAuthorImages.isPending}
+            className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:text-slate-500"
+          >
+            {syncAuthorImages.isPending ? "Syncing..." : "Sync Author Images"}
+          </button>
+          {absSyncStatus?.status === "completed" && (
+            <span className="text-sm text-emerald-400">
+              Updated {absSyncStatus.updated} author image{absSyncStatus.updated !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+
+        {(!absEnabled || !settings?.abs_url || !settings?.abs_api_key) && (
+          <p className="text-xs text-slate-500 mt-3">
+            Enable integration and configure connection above to use sync actions.
+          </p>
         )}
       </div>
         </>

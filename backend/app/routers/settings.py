@@ -64,6 +64,7 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
 
     abs_enabled = settings.get("abs_enabled", "false").lower() == "true"
     prefer_abs_metadata = settings.get("prefer_abs_metadata", "false").lower() == "true"
+    open_owned_in_abs = settings.get("open_owned_in_abs", "false").lower() == "true"
 
     last_scan = settings.get("last_scan_at")
     last_scan_summary = None
@@ -101,6 +102,7 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         abs_library_id=abs_library_id,
         abs_library_id_source=abs_library_id_source,
         prefer_abs_metadata=prefer_abs_metadata,
+        open_owned_in_abs=open_owned_in_abs,
         library_path=str(BOOKS_DIR),
         last_scan_at=last_scan,
         last_scan_summary=last_scan_summary,
@@ -132,6 +134,9 @@ async def update_settings(body: SettingsUpdate, db: AsyncSession = Depends(get_d
 
     if body.prefer_abs_metadata is not None:
         await _upsert_setting(db, "prefer_abs_metadata", "true" if body.prefer_abs_metadata else "false")
+
+    if body.open_owned_in_abs is not None:
+        await _upsert_setting(db, "open_owned_in_abs", "true" if body.open_owned_in_abs else "false")
 
     if body.scan_interval_hours is not None:
         await _upsert_setting(db, "scan_interval_hours", str(body.scan_interval_hours))

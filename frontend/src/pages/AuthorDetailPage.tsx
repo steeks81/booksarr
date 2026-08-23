@@ -11,6 +11,7 @@ import SeriesGroup from "../components/SeriesGroup";
 import SortControls from "../components/SortControls";
 import ViewToggle from "../components/ViewToggle";
 import SearchBar from "../components/SearchBar";
+import { BookFilterDropdown, bookMatchesFilter, type BookFilterKey } from "../components/BookFilterDropdown";
 import AuthorPortraitPickerDialog from "../components/AuthorPortraitPickerDialog";
 import FixAuthorMatchDialog from "../components/FixAuthorMatchDialog";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -69,6 +70,9 @@ export default function AuthorDetailPage() {
   const [sort, setSort] = useState("series");
   const [view, setView] = useState<"grid" | "table">("grid");
   const [search, setSearch] = useState("");
+  const [filters, setFilters] = useState<BookFilterKey[]>([]);
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const filterMenuRef = useRef<HTMLDivElement | null>(null);
   const [bioExpanded, setBioExpanded] = useState(false);
   const [portraitPickerOpen, setPortraitPickerOpen] = useState(false);
   const [portraitMenuOpen, setPortraitMenuOpen] = useState(false);
@@ -83,6 +87,17 @@ export default function AuthorDetailPage() {
   const isAuthorRefreshRunning = authorRefreshStatus?.status === "refreshing";
   const isThisAuthorRefreshing = isAuthorRefreshRunning && authorRefreshStatus?.author_id === authorId;
   const handleSearch = useCallback((value: string) => setSearch(value), []);
+  const toggleFilterValue = useCallback((value: BookFilterKey | "all") => {
+    if (value === "all") {
+      setFilters([]);
+      return;
+    }
+    setFilters((current) => (
+      current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value]
+    ));
+  }, []);
   const startAuthorRefresh = useCallback((mode: "full" | "new_releases") => {
     if (!author) return;
     setRefreshMenuOpen(false);
@@ -123,12 +138,33 @@ export default function AuthorDetailPage() {
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [refreshMenuOpen]);
+
+  useEffect(() => {
+    if (!filterMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (filterMenuRef.current && !filterMenuRef.current.contains(event.target as Node)) {
+        setFilterMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [filterMenuOpen]);
   const imgUrl = author ? getImageUrl(author.image_cached_path, author.image_url) : "";
 
   const searchNormalized = search.trim().toLowerCase();
-  const filteredBooks = searchNormalized
-    ? (author?.books ?? []).filter((book) => book.title.toLowerCase().includes(searchNormalized))
-    : (author?.books ?? []);
+  const filteredBooks = (author?.books ?? []).filter((book) => {
+    // Apply search filter
+    if (searchNormalized && !book.title.toLowerCase().includes(searchNormalized)) {
+      return false;
+    }
+    // Apply book filters (owned/missing/format)
+    if (filters.length > 0 && !filters.some((filter) => bookMatchesFilter(book, filter))) {
+      return false;
+    }
+    return true;
+  });
   const filteredUnmatchedLocalFiles: UnmatchedLocalFile[] = searchNormalized
     ? (author?.unmatched_local_files ?? []).filter((file) =>
       file.file_path.toLowerCase().includes(searchNormalized)
@@ -400,7 +436,41 @@ export default function AuthorDetailPage() {
           <div className="mb-2">
             <div className={`flex ${isMobile ? "flex-col items-start gap-2" : "items-center gap-3"}`}>
               <div>
-                <h1 className={`${isMobile ? "text-2xl" : "text-3xl"} font-bold`}>{author.name}</h1>
+                {(() => {
+                  // Determine where clicking the author name should go
+                  const hasOwnedBooks = author.book_count_local > 0;
+                  const shouldOpenAbs = settings?.open_owned_in_abs && settings?.abs_enabled && hasOwnedBooks;
+                  const hardcoverUrl = author.hardcover_slug ? `https://hardcover.app/authors/${author.hardcover_slug}` : null;
+                  
+                  const handleAuthorClick = () => {
+                    if (shouldOpenAbs && settings?.abs_url) {
+                      const absUrl = settings.abs_url.replace(/\/$/, "");
+                      if (author.abs_author_id) {
+                        window.open(`${absUrl}/author/${author.abs_author_id}`, "_blank", "noopener,noreferrer");
+                      } else {
+                        // Fallback: filter by author name
+                        const filterValue = btoa(author.name);
+                        window.open(`${absUrl}/library/${settings.abs_library_id}/bookshelf?filter=authors.${filterValue}`, "_blank", "noopener,noreferrer");
+                      }
+                    } else if (hardcoverUrl) {
+                      window.open(hardcoverUrl, "_blank", "noopener,noreferrer");
+                    }
+                  };
+                  
+                  const isClickable = shouldOpenAbs || hardcoverUrl;
+                  
+                  return isClickable ? (
+                    <h1 
+                      className={`${isMobile ? "text-2xl" : "text-3xl"} font-bold cursor-pointer hover:text-emerald-400 transition-colors`}
+                      onClick={handleAuthorClick}
+                      title={shouldOpenAbs ? "Open in Audiobookshelf" : "Open in Hardcover"}
+                    >
+                      {author.name}
+                    </h1>
+                  ) : (
+                    <h1 className={`${isMobile ? "text-2xl" : "text-3xl"} font-bold`}>{author.name}</h1>
+                  );
+                })()}
                 {author.asin && (
                   <span className="text-xs text-slate-500 font-mono">ASIN: {author.asin}</span>
                 )}
@@ -448,26 +518,59 @@ export default function AuthorDetailPage() {
                     >
                       Fix Match
                     </button>
-                    {settings?.abs_enabled && (
+                    {settings?.abs_enabled && author?.abs_author_id && (
                       <button
                         type="button"
                         onClick={() => {
                           setRefreshMenuOpen(false);
                           if (settings?.abs_url) {
                             const absUrl = settings.abs_url.replace(/\/$/, "");
-                            if (author?.abs_author_id) {
-                              // Direct link using stored ABS author ID
-                              window.open(`${absUrl}/author/${author.abs_author_id}`, "_blank", "noopener,noreferrer");
-                            } else if (author?.name) {
-                              // Fallback: filter by author name (base64 encoded)
-                              const filterValue = btoa(author.name);
-                              window.open(`${absUrl}/library/${settings.abs_library_id}/bookshelf?filter=authors.${filterValue}`, "_blank", "noopener,noreferrer");
-                            }
+                            window.open(`${absUrl}/author/${author.abs_author_id}`, "_blank", "noopener,noreferrer");
                           }
                         }}
                         className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
                       >
                         Open in Audiobookshelf
+                      </button>
+                    )}
+                    {settings?.abs_enabled && !author?.abs_author_id && author?.name && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRefreshMenuOpen(false);
+                          if (settings?.abs_url) {
+                            const absUrl = settings.abs_url.replace(/\/$/, "");
+                            const filterValue = btoa(author.name);
+                            window.open(`${absUrl}/library/${settings.abs_library_id}/bookshelf?filter=authors.${filterValue}`, "_blank", "noopener,noreferrer");
+                          }
+                        }}
+                        className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                      >
+                        Search Audiobookshelf
+                      </button>
+                    )}
+                    {author?.hardcover_slug && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRefreshMenuOpen(false);
+                          window.open(`https://hardcover.app/authors/${author.hardcover_slug}`, "_blank", "noopener,noreferrer");
+                        }}
+                        className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                      >
+                        Open in Hardcover
+                      </button>
+                    )}
+                    {!author?.hardcover_slug && author?.name && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRefreshMenuOpen(false);
+                          window.open(`https://hardcover.app/search?q=${encodeURIComponent(author.name)}`, "_blank", "noopener,noreferrer");
+                        }}
+                        className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                      >
+                        Search Hardcover
                       </button>
                     )}
                   </div>
@@ -655,6 +758,14 @@ export default function AuthorDetailPage() {
         <h2 className="text-xl font-semibold">Books</h2>
         <div className={`flex ${isMobile ? "flex-col gap-2" : "items-center gap-3"}`}>
           <SearchBar value={search} onChange={handleSearch} placeholder="Search this author..." />
+          <BookFilterDropdown
+            selected={filters}
+            open={filterMenuOpen}
+            onToggleOpen={() => setFilterMenuOpen((current) => !current)}
+            onToggleValue={toggleFilterValue}
+            onClear={() => setFilters([])}
+            menuRef={filterMenuRef}
+          />
           {isMobile ? (
             <select
               value={sort}

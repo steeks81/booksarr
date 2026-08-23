@@ -91,9 +91,38 @@ export default function BookCard({
     ? `https://hardcover.app/books/${book.hardcover_slug}`
     : null;
 
-  const handleClick = () => {
+  // Build ABS URL for owned books (instant link if abs_book_id available)
+  const absUrl = book.is_owned && book.abs_book_id && settings?.abs_url
+    ? `${settings.abs_url.replace(/\/$/, "")}/item/${book.abs_book_id}`
+    : null;
+
+  const handleClick = async () => {
+    // If open_owned_in_abs is enabled and book is owned with ABS link, go to ABS
+    if (settings?.open_owned_in_abs && book.is_owned && settings?.abs_enabled) {
+      if (absUrl) {
+        window.open(absUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+      // Fallback: lookup by file path if no abs_book_id
+      const filePath = book.local_files[0]?.file_path;
+      if (filePath) {
+        try {
+          const result = await absLookup.mutateAsync(filePath);
+          if (result.found && result.abs_url) {
+            window.open(result.abs_url, "_blank", "noopener,noreferrer");
+            return;
+          }
+        } catch {
+          // Fall through to hardcover
+        }
+      }
+    }
+    // Default: open in Hardcover (or search if no slug)
     if (hardcoverUrl) {
       window.open(hardcoverUrl, "_blank", "noopener,noreferrer");
+    } else if (book.title) {
+      // No hardcover_slug - search by title
+      window.open(`https://hardcover.app/search?q=${encodeURIComponent(book.title)}`, "_blank", "noopener,noreferrer");
     } else if (onClick) {
       onClick();
     }
@@ -268,16 +297,6 @@ export default function BookCard({
                 >
                   Choose Poster
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeMenu();
-                    setIrcSearchOpen(true);
-                  }}
-                  className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
-                >
-                  Search IRC
-                </button>
                 {book.is_owned && book.local_files.length > 0 && settings?.abs_enabled && (
                   <button
                     type="button"
@@ -337,6 +356,40 @@ export default function BookCard({
                     {absSearchPending ? "Searching..." : "Search Audiobookshelf"}
                   </button>
                 )}
+                {hardcoverUrl && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeMenu();
+                      window.open(hardcoverUrl, "_blank", "noopener,noreferrer");
+                    }}
+                    className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                  >
+                    Open in Hardcover
+                  </button>
+                )}
+                {!hardcoverUrl && book.title && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeMenu();
+                      window.open(`https://hardcover.app/search?q=${encodeURIComponent(book.title)}`, "_blank", "noopener,noreferrer");
+                    }}
+                    className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                  >
+                    Search Hardcover
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeMenu();
+                    setIrcSearchOpen(true);
+                  }}
+                  className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                >
+                  Search IRC
+                </button>
                 <button
                   type="button"
                   onClick={() => {

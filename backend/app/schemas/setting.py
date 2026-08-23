@@ -75,6 +75,7 @@ class SettingsResponse(BaseModel):
     abs_library_id: str = ""
     abs_library_id_source: Literal["database", "environment", "none"] = "none"
     prefer_abs_metadata: bool = False
+    open_owned_in_abs: bool = False
     library_path: str
     last_scan_at: str | None
     last_scan_summary: ScanSummary | None = None
@@ -91,6 +92,7 @@ class SettingsUpdate(BaseModel):
     abs_api_key: str | None = None
     abs_library_id: str | None = None
     prefer_abs_metadata: bool | None = None
+    open_owned_in_abs: bool | None = None
     scan_interval_hours: int | None = None
     log_level: str | None = None
     visibility_categories: VisibilityCategories | None = None

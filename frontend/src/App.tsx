@@ -23,7 +23,8 @@ export default function App() {
         <Route path="/settings/api-keys" element={<SettingsPage section="api-keys" />} />
         <Route path="/settings/profiles" element={<SettingsPage section="profiles" />} />
         <Route path="/settings/metadata-refreshes" element={<SettingsPage section="metadata-refreshes" />} />
-        <Route path="/settings/abs-integration" element={<SettingsPage section="abs-integration" />} />
+        <Route path="/settings/integrations" element={<SettingsPage section="integrations" />} />
+        <Route path="/settings/audiobookshelf" element={<SettingsPage section="audiobookshelf" />} />
         <Route path="/settings/unmatched-files" element={<UnmatchedFilesPage />} />
         <Route path="/settings/irc" element={<IrcSettingsPage />} />
         <Route path="/settings/logs" element={<LogsPage />} />

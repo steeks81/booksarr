@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { useSettings, useUpdateSettings, useScanStatus, useTriggerScan, useResetData, useApiUsage } from "../api/settings";
 import { useAbsSyncAuthorImages, useAbsSyncStatus } from "../api/abs";
+import { useIrcSettings } from "../api/irc";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ScanSummary, VisibilityCategories } from "../types";
 
@@ -72,7 +73,7 @@ const VISIBILITY_OPTIONS: Array<{
   },
   {
     key: "comic_issues",
-    label: "Comic Issues",
+    label: "Likely Comic Books",
     description: "Comic book issues detected by title pattern (e.g., Punisher #12, Batman #45).",
   },
   {
@@ -91,7 +92,7 @@ const EMPTY_SCAN_SOURCE = {
   failure_reasons: {},
 };
 
-type SettingsSection = "api-keys" | "profiles" | "metadata-refreshes" | "abs-integration";
+type SettingsSection = "api-keys" | "profiles" | "metadata-refreshes" | "integrations" | "audiobookshelf";
 
 const SECTION_META: Record<SettingsSection, { title: string; description: string }> = {
   "api-keys": {
@@ -106,14 +107,19 @@ const SECTION_META: Record<SettingsSection, { title: string; description: string
     title: "Metadata Refreshes",
     description: "Run scans, manage refresh cadence, and reset metadata state when needed.",
   },
-  "abs-integration": {
-    title: "Audiobookshelf Integration",
+  integrations: {
+    title: "Integrations",
+    description: "Configure connections to external services like Audiobookshelf and IRC.",
+  },
+  audiobookshelf: {
+    title: "Audiobookshelf",
     description: "Connect to Audiobookshelf to sync author images, book covers, and metadata.",
   },
 };
 
 export default function SettingsPage({ section }: { section: SettingsSection }) {
   const { data: settings } = useSettings();
+  const { data: ircSettings } = useIrcSettings();
   const updateSettings = useUpdateSettings();
   const triggerScan = useTriggerScan();
   const resetData = useResetData();
@@ -145,6 +151,7 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
   const [absEnabled, setAbsEnabled] = useState(false);
   const [absLibraryId, setAbsLibraryId] = useState("");
   const [preferAbsMetadata, setPreferAbsMetadata] = useState(false);
+  const [openOwnedInAbs, setOpenOwnedInAbs] = useState(false);
   const [absTestResult, setAbsTestResult] = useState<{
     success: boolean;
     message: string;
@@ -180,8 +187,42 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
       setAbsEnabled(settings.abs_enabled ?? false);
       setAbsLibraryId(settings.abs_library_id ?? "");
       setPreferAbsMetadata(settings.prefer_abs_metadata ?? false);
+      setOpenOwnedInAbs(settings.open_owned_in_abs ?? false);
     }
   }, [settings]);
+
+  // Auto-test ABS connection when section opens and ABS is configured
+  useEffect(() => {
+    if (
+      section === "audiobookshelf" &&
+      settings?.abs_enabled &&
+      settings?.abs_url &&
+      !absTestResult &&
+      !absTestLoading
+    ) {
+      // Trigger auto-test
+      const autoTest = async () => {
+        setAbsTestLoading(true);
+        try {
+          const response = await fetch("/api/abs/test-connection", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          const result = await response.json();
+          setAbsTestResult(result);
+          if (result.success && result.libraries?.length === 1 && !absLibraryId) {
+            setAbsLibraryId(result.libraries[0].id);
+          }
+        } catch {
+          setAbsTestResult({ success: false, message: "Connection test failed", server_version: null, libraries: [] });
+        } finally {
+          setAbsTestLoading(false);
+        }
+      };
+      autoTest();
+    }
+  }, [section, settings?.abs_enabled, settings?.abs_url, absTestResult, absTestLoading, absLibraryId]);
 
   useEffect(() => {
     if (!settings?.last_scan_summary || typeof window === "undefined") return;
@@ -249,9 +290,11 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
       abs_api_key?: string;
       abs_library_id?: string;
       prefer_abs_metadata?: boolean;
+      open_owned_in_abs?: boolean;
     } = {
       abs_enabled: absEnabled,
       prefer_abs_metadata: preferAbsMetadata,
+      open_owned_in_abs: openOwnedInAbs,
     };
     if (absUrl.trim()) updates.abs_url = absUrl;
     if (absApiKey.trim()) updates.abs_api_key = absApiKey;
@@ -830,7 +873,44 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
         </>
       )}
 
-      {section === "abs-integration" && (
+      {section === "integrations" && (
+        <>
+          <div className="bg-slate-800 rounded-lg border border-slate-700 p-6 mb-6">
+            <h3 className="text-lg font-semibold mb-2">External Services</h3>
+            <p className="text-sm text-slate-400 mb-6">
+              Connect Booksarr to external services for enhanced functionality.
+            </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <a
+                href="/settings/audiobookshelf"
+                className="block rounded-lg border border-slate-600 bg-slate-700/50 p-4 hover:bg-slate-700 transition-colors"
+              >
+                <div className="flex items-center gap-3 mb-2">
+                  <div className={`w-2 h-2 rounded-full ${settings?.abs_enabled ? "bg-emerald-400" : "bg-slate-500"}`} />
+                  <h4 className="font-medium text-slate-200">Audiobookshelf</h4>
+                </div>
+                <p className="text-sm text-slate-400">
+                  Sync author images, book covers, and enable direct links to your library.
+                </p>
+              </a>
+              <a
+                href="/settings/irc"
+                className="block rounded-lg border border-slate-600 bg-slate-700/50 p-4 hover:bg-slate-700 transition-colors"
+              >
+                <div className="flex items-center gap-3 mb-2">
+                  <div className={`w-2 h-2 rounded-full ${ircSettings?.enabled ? "bg-emerald-400" : "bg-slate-500"}`} />
+                  <h4 className="font-medium text-slate-200">IRC</h4>
+                </div>
+                <p className="text-sm text-slate-400">
+                  Search and download books via IRC DCC transfers.
+                </p>
+              </a>
+            </div>
+          </div>
+        </>
+      )}
+
+      {section === "audiobookshelf" && (
         <>
       {/* ABS Connection */}
       <div className="bg-slate-800 rounded-lg border border-slate-700 p-6 mb-6">
@@ -842,16 +922,29 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
             </p>
           </div>
           <div className="text-right">
-            {absTestResult && (
+            {!settings?.abs_enabled ? (
+              <>
+                <div className="text-sm font-medium text-amber-400">disabled</div>
+                <div className="text-xs text-slate-500 mt-1">ABS integration disabled in settings</div>
+              </>
+            ) : absTestLoading ? (
+              <div className="text-sm font-medium text-amber-400">checking...</div>
+            ) : absTestResult ? (
               <>
                 <div className={`text-sm font-medium ${absTestResult.success ? "text-emerald-400" : "text-red-400"}`}>
                   {absTestResult.success ? "connected" : "error"}
                 </div>
                 <div className="text-xs text-slate-500 mt-1">{absTestResult.message}</div>
+                {absTestResult.success && absTestResult.libraries && (
+                  <div className="text-xs text-slate-400 mt-1">
+                    {absTestResult.libraries.length} {absTestResult.libraries.length === 1 ? "library" : "libraries"} available
+                  </div>
+                )}
               </>
-            )}
-            {!absTestResult && settings?.abs_url && settings?.abs_api_key && (
+            ) : settings?.abs_url ? (
               <div className="text-xs text-slate-500">Click "Test Connection" to verify</div>
+            ) : (
+              <div className="text-xs text-slate-500">Configure URL to connect</div>
             )}
           </div>
         </div>
@@ -920,7 +1013,9 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
 
           <div className="md:col-span-2">
             <div className="text-xs text-slate-400 mb-1">Library</div>
-            {absTestResult?.libraries && absTestResult.libraries.length > 0 ? (
+            {!settings?.abs_enabled ? (
+              <div className="text-sm text-slate-500">Enable ABS integration to configure library</div>
+            ) : absTestResult?.libraries && absTestResult.libraries.length > 0 ? (
               <select
                 value={absLibraryId}
                 onChange={(e) => setAbsLibraryId(e.target.value)}
@@ -980,11 +1075,24 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
             onChange={(e) => setPreferAbsMetadata(e.target.checked)}
             className="h-4 w-4 rounded border-slate-500 bg-slate-700 text-emerald-500 focus:ring-emerald-500"
           />
-          Prefer ABS metadata
+          Prefer Audiobookshelf metadata
         </label>
         <p className="text-xs text-slate-500 mt-2 ml-7">
           When enabled, author images and book covers from ABS take priority over Hardcover.
           When disabled, ABS data only fills gaps where Hardcover data is missing.
+        </p>
+
+        <label className="flex items-center gap-3 text-sm text-slate-200 mt-4">
+          <input
+            type="checkbox"
+            checked={openOwnedInAbs}
+            onChange={(e) => setOpenOwnedInAbs(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-500 bg-slate-700 text-emerald-500 focus:ring-emerald-500"
+          />
+          Open library items in Audiobookshelf
+        </label>
+        <p className="text-xs text-slate-500 mt-2 ml-7">
+          When enabled, clicking owned books or authors with books in your library opens Audiobookshelf instead of Hardcover.
         </p>
       </div>
 
@@ -994,7 +1102,7 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
           <div>
             <h3 className="text-lg font-semibold mb-2">Sync Actions</h3>
             <p className="text-sm text-slate-400">
-              Sync metadata, images, and covers from Audiobookshelf to enrich your library.
+              Sync author images and book covers from Audiobookshelf to enrich your library.
             </p>
           </div>
           {absSyncStatus && absSyncStatus.status !== "idle" && (
@@ -1027,7 +1135,7 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
                 setTimeout(() => setAbsSyncing(false), 2000);
               }
             }}
-            disabled={!absEnabled || !settings?.abs_url || !settings?.abs_api_key || !absLibraryId || syncAuthorImages.isPending}
+            disabled={!settings?.abs_enabled || !settings?.abs_url || !settings?.abs_api_key || !settings?.abs_library_id || syncAuthorImages.isPending}
             className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:text-slate-500"
           >
             {syncAuthorImages.isPending ? "Syncing..." : "Sync from Audiobookshelf"}
@@ -1039,7 +1147,7 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
           )}
         </div>
 
-        {(!absEnabled || !settings?.abs_url || !settings?.abs_api_key) && (
+        {(!settings?.abs_enabled || !settings?.abs_url || !settings?.abs_api_key) && (
           <p className="text-xs text-slate-500 mt-3">
             Enable integration and configure connection above to use sync actions.
           </p>

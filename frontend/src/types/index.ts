@@ -411,6 +411,7 @@ export interface Settings {
   abs_library_id: string;
   abs_library_id_source: "database" | "environment" | "none";
   prefer_abs_metadata: boolean;
+  open_owned_in_abs: boolean;
   library_path: string;
   last_scan_at: string | null;
   last_scan_summary: ScanSummary | null;

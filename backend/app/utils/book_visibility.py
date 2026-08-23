@@ -42,7 +42,7 @@ VISIBILITY_CATEGORY_LABELS = {
     "upcoming_unreleased": "Upcoming / Unreleased",
     "pending_hardcover_records": "Pending Hardcover Records",
     "likely_excerpts": "Likely Excerpts / Samples",
-    "comic_issues": "Comic Issues",
+    "comic_issues": "Likely Comic Books",
     "anthologies": "Anthologies (5+ Authors)",
 }
 

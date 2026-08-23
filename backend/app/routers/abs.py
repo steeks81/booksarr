@@ -135,7 +135,7 @@ async def test_connection(
             
             return TestConnectionResponse(
                 success=True,
-                message=f"Connected to Audiobookshelf v{server_version}",
+                message=f"Connected to Audiobookshelf{' v' + server_version if server_version and server_version != 'unknown' else ''}",
                 server_version=server_version,
                 libraries=libraries,
             )

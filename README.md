@@ -1,4 +1,11 @@
-# Booksarr
+# Booksarr (Fork)
+
+> **This is a personal fork of [apollolabsai/booksarr](https://github.com/apollolabsai/booksarr)** with additional features:
+> - **Recursive folder scanning** — Finds books at any depth (e.g., `Author/Series/Book/`) not just 2 levels
+> - **Co-author book linking** — Books appear on all contributor author pages
+> - **Audiobookshelf integration** — Sync author/book IDs, direct links to ABS items
+> - **Enhanced filtering** — Filter by owned/missing, file format, hide anthologies and comics
+> - **UI improvements** — Integrations menu, clickable author names, search fallbacks
 
 Booksarr is a Docker-based book library manager inspired by Radarr/Sonarr. It scans your local collection, matches files against full author catalogs, and gives you visibility into all the books an author has written, not just the ones you already own. It highlights owned titles inside that larger catalog, enriches metadata from multiple sources, and gives you tools to selectively show or hide books based on profiles or manually. You can override covers, refresh individual titles, search IRC for missing books, and track scan outcomes.
 

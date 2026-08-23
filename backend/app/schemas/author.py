@@ -12,6 +12,8 @@ class AuthorSummary(BaseModel):
     book_count_local: int
     book_count_total: int
     book_count_hidden: int = 0
+    asin: str | None = None
+    abs_author_id: str | None = None
 
     class Config:
         from_attributes = True
@@ -168,6 +170,7 @@ class BookInAuthor(BaseModel):
     owned_copy_count: int
     local_files: list["LocalBookFile"]
     series_info: list["SeriesPositionInfo"]
+    abs_book_id: str | None = None
 
     class Config:
         from_attributes = True

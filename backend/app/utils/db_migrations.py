@@ -172,6 +172,8 @@ def run_schema_migrations(conn: Connection) -> None:
         "manual_series_name": "VARCHAR",
         "manual_series_position": "FLOAT",
         "genres": "TEXT",
+        "abs_book_id": "VARCHAR",
+        "contributors": "TEXT",
     }
 
     for column_name, column_type in book_column_defs.items():
@@ -206,6 +208,8 @@ def run_schema_migrations(conn: Connection) -> None:
         "manual_image_source": "VARCHAR",
         "manual_image_url": "VARCHAR",
         "manual_image_page_url": "VARCHAR",
+        "asin": "VARCHAR",
+        "abs_author_id": "VARCHAR",
     }
 
     for column_name, column_type in author_column_defs.items():

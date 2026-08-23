@@ -58,6 +58,7 @@ class BookSummary(BaseModel):
     owned_copy_count: int
     local_files: list[LocalBookFile]
     series_info: list[SeriesPositionInfo]
+    abs_book_id: str | None = None
 
     class Config:
         from_attributes = True
@@ -170,6 +171,7 @@ class BookMetadataInfoResponse(BaseModel):
     manual: BookMetadataValues
     files: list[BookOpfMetadataFile]
     editable_fields: list[str]
+    contributors: list[str] = []  # List of all contributor names
 
 
 class BookMetadataUpdateRequest(BaseModel):

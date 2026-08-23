@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -302,6 +302,7 @@ async def _add_author_from_hardcover(
             book = book_result.scalar_one_or_none()
             tags_json = json.dumps(hc_book.tags) if hc_book.tags else None
             genres_json = json.dumps(hc_book.genres)
+            contributors_json = json.dumps(hc_book.contributors) if hc_book.contributors else None
             if book:
                 if book.title != hc_book.title:
                     book.google_id = None
@@ -318,7 +319,7 @@ async def _add_author_from_hardcover(
                 if book.release_date != hc_book.release_date:
                     book.publish_date_checked_at = None
                 book.title = hc_book.title
-                book.author_id = author.id
+                # Don't reassign author_id - keep original owner to avoid flip-flopping on co-authored books
                 book.hardcover_slug = hc_book.slug
                 book.compilation = hc_book.compilation
                 book.book_category_id = hc_book.book_category_id
@@ -333,6 +334,7 @@ async def _add_author_from_hardcover(
                 book.cover_image_url = hc_book.image_url
                 book.tags = tags_json
                 book.genres = genres_json
+                book.contributors = contributors_json
                 book.rating = hc_book.rating
                 book.pages = hc_book.pages
                 book.language = hc_book.language
@@ -355,6 +357,7 @@ async def _add_author_from_hardcover(
                     cover_image_url=hc_book.image_url,
                     tags=tags_json,
                     genres=genres_json,
+                    contributors=contributors_json,
                     rating=hc_book.rating,
                     pages=hc_book.pages,
                     language=hc_book.language,
@@ -959,10 +962,17 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
     if not author:
         raise HTTPException(status_code=404, detail="Author not found")
 
-    # Get all books for this author with their series info
+    # Get all books for this author:
+    # 1. Books where author_id matches (primary ownership)
+    # 2. Books where author name appears in contributors JSON (co-authored books)
     books_result = await db.execute(
         select(Book)
-        .where(Book.author_id == author_id)
+        .where(
+            or_(
+                Book.author_id == author_id,
+                Book.contributors.like(f'%"{author.name}"%'),
+            )
+        )
         .options(
             selectinload(Book.files),
             selectinload(Book.book_series).selectinload(BookSeries.series),
@@ -1075,6 +1085,7 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
                 for book_file in book.files
             ],
             series_info=series_info,
+            abs_book_id=book.abs_book_id,
         ))
 
     # Sort series books by position
@@ -1095,6 +1106,8 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
         book_count_local=sum(1 for book in books if book.is_owned),
         book_count_total=len(books),
         book_count_hidden=hidden_books_count,
+        asin=author.asin,
+        abs_author_id=author.abs_author_id,
         author_directories=[
             AuthorDirectoryEntry(
                 id=directory.id,

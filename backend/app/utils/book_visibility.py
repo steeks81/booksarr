@@ -24,6 +24,8 @@ VISIBILITY_CATEGORY_DEFAULTS = {
     "upcoming_unreleased": False,
     "pending_hardcover_records": False,
     "likely_excerpts": False,
+    "comic_issues": False,
+    "anthologies": False,
 }
 
 VISIBILITY_CATEGORY_LABELS = {
@@ -40,7 +42,12 @@ VISIBILITY_CATEGORY_LABELS = {
     "upcoming_unreleased": "Upcoming / Unreleased",
     "pending_hardcover_records": "Pending Hardcover Records",
     "likely_excerpts": "Likely Excerpts / Samples",
+    "comic_issues": "Comic Issues",
+    "anthologies": "Anthologies (5+ Authors)",
 }
+
+# Regex to detect comic book issues - title ending with #N (optionally with close paren)
+_COMIC_ISSUE_RE = re.compile(r"#\d+\)?$")
 
 _COLLECTION_KEYWORD_RE = re.compile(
     r"\b("
@@ -103,6 +110,28 @@ def is_likely_collection_by_title(title: str | None) -> bool:
     return bool(_MULTI_WORK_SUFFIX_RE.search(title))
 
 
+def is_comic_issue(title: str | None) -> bool:
+    """Detect comic book issues by title pattern (ends with #N)."""
+    if not title:
+        return False
+    return bool(_COMIC_ISSUE_RE.search(title))
+
+
+def is_anthology(book: Book, threshold: int = 5) -> bool:
+    """Detect anthologies by having many primary authors (default 5+)."""
+    contributors = getattr(book, "contributors", None)
+    if not contributors:
+        return False
+    try:
+        import json
+        contributor_list = json.loads(contributors)
+        if isinstance(contributor_list, list):
+            return len(contributor_list) >= threshold
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return False
+
+
 def is_likely_excerpt(book: Book) -> bool:
     return (
         (book.hardcover_state or "").lower() == "pending"
@@ -155,6 +184,14 @@ def is_book_visible(book: Book, visibility_settings: dict[str, bool], today: str
     if is_likely_excerpt(book):
         return visibility_settings["likely_excerpts"]
     if (book.hardcover_state or "").lower() == "pending" and not visibility_settings["pending_hardcover_records"]:
+        return False
+    
+    # Check comic issues (title ends with #N)
+    if is_comic_issue(book.title) and not visibility_settings.get("comic_issues", False):
+        return False
+    
+    # Check anthologies (5+ primary authors)
+    if is_anthology(book) and not visibility_settings.get("anthologies", False):
         return False
 
     return visibility_settings.get(get_primary_visibility_category(book), True)
@@ -227,6 +264,26 @@ def book_visibility_sql_filter(
         not_(likely_collection_expr),
     )
     pending_expr = func.lower(func.coalesce(Book.hardcover_state, "")) == "pending"
+    
+    # Comic issues: title ends with #N (e.g., "Punisher #12", "Batman #45")
+    # SQLite doesn't have native REGEXP, so use LIKE with GLOB pattern workaround
+    # Match titles ending with # followed by digits (optionally with close paren)
+    title_expr = func.coalesce(Book.title, "")
+    comic_issue_expr = or_(
+        title_expr.like("%#_"),       # Single digit
+        title_expr.like("%#__"),      # Two digits
+        title_expr.like("%#___"),     # Three digits
+        title_expr.like("%#_)"),      # Single digit with paren
+        title_expr.like("%#__)"),     # Two digits with paren
+        title_expr.like("%#___)"),    # Three digits with paren
+    )
+    
+    # Anthologies: 5+ contributors (parsed from JSON array)
+    # SQLite json_array_length returns the length of a JSON array
+    anthology_expr = and_(
+        Book.contributors.is_not(None),
+        func.json_array_length(Book.contributors) >= 5,
+    )
 
     primary_category_visible_expr = case(
         (Book.book_category_id == 5, _sql_bool(visibility_settings["fan_fiction"])),
@@ -250,6 +307,8 @@ def book_visibility_sql_filter(
     non_owned_visible_expr = and_(
         true() if visibility_settings["non_english_books"] else not_(non_english_expr),
         true() if visibility_settings["upcoming_unreleased"] else not_(upcoming_expr),
+        true() if visibility_settings.get("comic_issues", False) else not_(comic_issue_expr),
+        true() if visibility_settings.get("anthologies", False) else not_(anthology_expr),
         case(
             (excerpt_expr, _sql_bool(visibility_settings["likely_excerpts"])),
             else_=and_(
@@ -324,6 +383,12 @@ def get_hidden_categories(
         categories.append((key, VISIBILITY_CATEGORY_LABELS[key]))
     if (book.hardcover_state or "").lower() == "pending" and not visibility_settings["pending_hardcover_records"]:
         key = "pending_hardcover_records"
+        categories.append((key, VISIBILITY_CATEGORY_LABELS[key]))
+    if is_comic_issue(book.title) and not visibility_settings.get("comic_issues", False):
+        key = "comic_issues"
+        categories.append((key, VISIBILITY_CATEGORY_LABELS[key]))
+    if is_anthology(book) and not visibility_settings.get("anthologies", False):
+        key = "anthologies"
         categories.append((key, VISIBILITY_CATEGORY_LABELS[key]))
 
     key = get_primary_visibility_category(book)

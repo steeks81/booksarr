@@ -70,6 +70,16 @@ const VISIBILITY_OPTIONS: Array<{
     label: "Likely Excerpts / Samples",
     description: "Low-page pending Book records that look like excerpts or sampler entries.",
   },
+  {
+    key: "comic_issues",
+    label: "Comic Issues",
+    description: "Comic book issues detected by title pattern (e.g., Punisher #12, Batman #45).",
+  },
+  {
+    key: "anthologies",
+    label: "Anthologies (5+ Authors)",
+    description: "Books with 5 or more primary authors, typically anthologies or short story collections.",
+  },
 ];
 
 const EMPTY_SCAN_SOURCE = {
@@ -98,7 +108,7 @@ const SECTION_META: Record<SettingsSection, { title: string; description: string
   },
   "abs-integration": {
     title: "Audiobookshelf Integration",
-    description: "Connect to Audiobookshelf to sync author images and metadata.",
+    description: "Connect to Audiobookshelf to sync author images, book covers, and metadata.",
   },
 };
 
@@ -828,7 +838,7 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
           <div>
             <h3 className="text-lg font-semibold mb-2">Connection</h3>
             <p className="text-sm text-slate-400">
-              Connect to your Audiobookshelf instance to sync author images and enable "Open in ABS" links.
+              Connect to your Audiobookshelf instance to sync data and enable "Open in Audiobookshelf" links.
             </p>
           </div>
           <div className="text-right">
@@ -984,7 +994,7 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
           <div>
             <h3 className="text-lg font-semibold mb-2">Sync Actions</h3>
             <p className="text-sm text-slate-400">
-              Sync metadata from Audiobookshelf to enrich your library.
+              Sync metadata, images, and covers from Audiobookshelf to enrich your library.
             </p>
           </div>
           {absSyncStatus && absSyncStatus.status !== "idle" && (
@@ -997,9 +1007,9 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
                 {absSyncStatus.status}
               </div>
               <div className="text-xs text-slate-500 mt-1">{absSyncStatus.message}</div>
-              {absSyncStatus.status === "syncing" && absSyncStatus.total_authors > 0 && (
+              {absSyncStatus.status === "syncing" && (absSyncStatus.total_authors > 0 || absSyncStatus.total_books > 0) && (
                 <div className="text-xs text-slate-500">
-                  {absSyncStatus.processed} / {absSyncStatus.total_authors} authors
+                  {absSyncStatus.authors_processed} / {absSyncStatus.total_authors} authors, {absSyncStatus.books_processed} / {absSyncStatus.total_books} books
                 </div>
               )}
             </div>
@@ -1020,11 +1030,11 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
             disabled={!absEnabled || !settings?.abs_url || !settings?.abs_api_key || !absLibraryId || syncAuthorImages.isPending}
             className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:text-slate-500"
           >
-            {syncAuthorImages.isPending ? "Syncing..." : "Sync Author Images"}
+            {syncAuthorImages.isPending ? "Syncing..." : "Sync from Audiobookshelf"}
           </button>
           {absSyncStatus?.status === "completed" && (
             <span className="text-sm text-emerald-400">
-              Updated {absSyncStatus.updated} author image{absSyncStatus.updated !== 1 ? "s" : ""}
+              Updated {absSyncStatus.authors_updated} author{absSyncStatus.authors_updated !== 1 ? "s" : ""}, {absSyncStatus.books_updated} book{absSyncStatus.books_updated !== 1 ? "s" : ""}
             </span>
           )}
         </div>

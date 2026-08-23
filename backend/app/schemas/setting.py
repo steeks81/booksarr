@@ -16,6 +16,8 @@ class VisibilityCategories(BaseModel):
     upcoming_unreleased: bool = False
     pending_hardcover_records: bool = False
     likely_excerpts: bool = False
+    comic_issues: bool = False
+    anthologies: bool = False
 
 
 class HiddenCategorySummary(BaseModel):

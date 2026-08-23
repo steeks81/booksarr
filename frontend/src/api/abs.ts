@@ -4,10 +4,15 @@ import type { AbsLibrary, AbsTestConnectionResponse } from "../types";
 interface AbsSyncStatus {
   status: string;
   total_authors: number;
-  processed: number;
-  updated: number;
-  skipped: number;
-  failed: number;
+  total_books: number;
+  authors_processed: number;
+  authors_updated: number;
+  authors_skipped: number;
+  authors_failed: number;
+  books_processed: number;
+  books_updated: number;
+  books_skipped: number;
+  books_failed: number;
   message: string;
 }
 
@@ -57,10 +62,10 @@ export function useAbsSyncStatus(enabled: boolean = false) {
   });
 }
 
-export function useAbsSyncAuthorImages() {
+export function useAbsSync() {
   return useMutation({
     mutationFn: async () => {
-      const response = await fetch("/api/abs/sync-author-images", {
+      const response = await fetch("/api/abs/sync", {
         method: "POST",
       });
       if (!response.ok) {
@@ -71,10 +76,15 @@ export function useAbsSyncAuthorImages() {
   });
 }
 
+// Keep old hook name for backward compatibility
+export function useAbsSyncAuthorImages() {
+  return useAbsSync();
+}
+
 interface AbsLookupBookResponse {
   found: boolean;
   abs_url: string | null;
-  abs_item_id: string | null;
+  abs_book_id: string | null;
   abs_title: string | null;
 }
 
@@ -90,6 +100,29 @@ export function useAbsLookupBook() {
         throw new Error("Failed to lookup book");
       }
       return response.json() as Promise<AbsLookupBookResponse>;
+    },
+  });
+}
+
+interface AbsSearchBookResponse {
+  found: boolean;
+  abs_url: string | null;
+  abs_book_id: string | null;
+  abs_title: string | null;
+}
+
+export function useAbsSearchBook() {
+  return useMutation({
+    mutationFn: async (params: { title: string; author_name?: string }) => {
+      const response = await fetch("/api/abs/search-book", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
+      if (!response.ok) {
+        throw new Error("Failed to search book");
+      }
+      return response.json() as Promise<AbsSearchBookResponse>;
     },
   });
 }

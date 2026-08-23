@@ -51,8 +51,11 @@ from backend.app.services.google_books import (
 from backend.app.services.abs_sync import (
     get_abs_settings,
     fetch_abs_authors,
-    sync_author_image_from_abs,
+    fetch_abs_books,
+    sync_author_from_abs,
+    sync_book_from_abs,
     AbsAuthor,
+    AbsBook,
 )
 from backend.app.utils.epub_cover import get_image_dimensions
 from backend.app.utils.api_usage import begin_api_usage_batch, clear_api_usage_batch, flush_api_usage_batch
@@ -935,6 +938,24 @@ async def _repair_local_file_links(
         if book_ids
     }
 
+    # Build author lookup by normalized name for filesystem author matching
+    all_authors_result = await db.execute(select(Author))
+    all_authors = all_authors_result.scalars().all()
+    author_id_by_key = {a.author_key: a.id for a in all_authors if a.author_key}
+
+    def _filesystem_author_mismatch(bf: BookFile) -> bool:
+        """Check if file's filesystem author doesn't match book's author_id."""
+        if not bf.book or not bf.file_path:
+            return False
+        path_parts = bf.file_path.split("/")
+        if not path_parts:
+            return False
+        fs_author_name = path_parts[0]
+        fs_author_key = normalize_author_key(primary_author_name(fs_author_name))
+        fs_author_id = author_id_by_key.get(fs_author_key)
+        # If filesystem author exists in DB and doesn't match book's author_id, reprocess
+        return fs_author_id is not None and bf.book.author_id != fs_author_id
+
     candidate_files = [
         bf for bf in all_book_files
         if (
@@ -1117,14 +1138,22 @@ async def _repair_local_file_links(
                 matching_authors = fallback_author_result.scalars().all()
                 author = matching_authors[0] if matching_authors else None
 
-        if not matching_authors and not matched_book:
-            await commit_and_report_repair_progress(idx)
-            continue
-
+        # Build candidate books list - include books owned by matching authors
+        # OR where filesystem author appears as a contributor (for co-authored books)
         candidate_books: list[Book] = []
-        if matching_authors:
+        filesystem_author_name = fallback_author  # First path component is author folder
+        
+        if matching_authors or filesystem_author_name:
+            conditions = []
+            if matching_authors:
+                conditions.append(Book.author_id.in_([candidate.id for candidate in matching_authors]))
+            # Also search for books where filesystem author is a contributor
+            # This handles co-authored books owned by a different author
+            if filesystem_author_name:
+                conditions.append(Book.contributors.like(f'%"{filesystem_author_name}"%'))
+            
             books_result = await db.execute(
-                select(Book).where(Book.author_id.in_([candidate.id for candidate in matching_authors]))
+                select(Book).where(or_(*conditions))
             )
             author_books = sorted(
                 books_result.scalars().all(),
@@ -1134,6 +1163,10 @@ async def _repair_local_file_links(
                 book for book in author_books
                 if not current_book or book.id != current_book.id
             ]
+        
+        if not candidate_books and not matched_book:
+            await commit_and_report_repair_progress(idx)
+            continue
 
         if not matched_book and bf.opf_isbn:
             target_isbn = normalize_isbn(bf.opf_isbn)
@@ -1182,6 +1215,9 @@ async def _repair_local_file_links(
             previous_book_id = bf.book_id
             bf.book = matched_book
             matched_book.is_owned = True
+            # Set author_id to match filesystem - filesystem is source of truth
+            if author and matched_book.author_id != author.id:
+                matched_book.author_id = author.id
             books_by_id[matched_book.id] = matched_book
             if folder_key:
                 sibling_book_ids_by_folder.setdefault(folder_key, set()).add(matched_book.id)
@@ -1218,6 +1254,8 @@ async def _repair_local_file_links(
                             previous_book.is_owned = False
                         else:
                             await db.delete(previous_book)
+                            # Remove from cache to prevent stale object errors
+                            books_by_id.pop(previous_book_id, None)
         else:
             local_title = _best_local_title(bf)
             if current_book and not current_book.hardcover_id and author:
@@ -1451,10 +1489,11 @@ async def _sync_author_hardcover_catalog(
         book = existing.scalar_one_or_none()
         tags_json = json.dumps(hc_book.tags) if hc_book.tags else None
         genres_json = json.dumps(hc_book.genres)
+        contributors_json = json.dumps(hc_book.contributors) if hc_book.contributors else None
 
         if book:
             book.title = hc_book.title
-            book.author_id = author.id
+            # Don't reassign author_id - keep original owner to avoid flip-flopping on co-authored books
             book.hardcover_slug = hc_book.slug
             book.compilation = hc_book.compilation
             book.book_category_id = hc_book.book_category_id
@@ -1469,6 +1508,7 @@ async def _sync_author_hardcover_catalog(
             book.cover_image_url = hc_book.image_url
             book.tags = tags_json
             book.genres = genres_json
+            book.contributors = contributors_json
             book.rating = hc_book.rating
             book.pages = hc_book.pages
             book.language = hc_book.language
@@ -1491,6 +1531,7 @@ async def _sync_author_hardcover_catalog(
                 cover_image_url=hc_book.image_url,
                 tags=tags_json,
                 genres=genres_json,
+                contributors=contributors_json,
                 rating=hc_book.rating,
                 pages=hc_book.pages,
                 language=hc_book.language,
@@ -2066,6 +2107,7 @@ async def run_full_sync(force: bool = False):
             
             # Fetch ABS authors if integration is enabled
             abs_authors: list[AbsAuthor] = []
+            abs_books: list[AbsBook] = []
             abs_url = ""
             abs_api_key = ""
             abs_prefer = False
@@ -2073,10 +2115,13 @@ async def run_full_sync(force: bool = False):
                 abs_url, abs_api_key, abs_library_id, abs_enabled, abs_prefer = await get_abs_settings(db)
                 if abs_enabled and abs_url and abs_api_key and abs_library_id:
                     abs_authors = await fetch_abs_authors(abs_url, abs_api_key, abs_library_id)
+                    abs_books = await fetch_abs_books(abs_url, abs_api_key, abs_library_id)
                     if abs_authors:
-                        logger.info("Loaded %d authors from ABS for image matching", len(abs_authors))
+                        logger.info("Loaded %d authors from ABS for metadata sync", len(abs_authors))
+                    if abs_books:
+                        logger.info("Loaded %d books from ABS for metadata sync", len(abs_books))
             except Exception as e:
-                logger.warning("Failed to fetch ABS authors: %s", e)
+                logger.warning("Failed to fetch ABS data: %s", e)
             
             try:
                 hardcover_throttled = False
@@ -2221,7 +2266,7 @@ async def run_full_sync(force: bool = False):
                     # ABS author image fallback (or override if prefer_abs is True)
                     if abs_authors and (not author.image_cached_path or abs_prefer) and not author_has_manual_image:
                         try:
-                            updated = await sync_author_image_from_abs(
+                            updated = await sync_author_from_abs(
                                 author, abs_url, abs_api_key, abs_authors, abs_prefer
                             )
                             if updated:
@@ -2379,6 +2424,7 @@ async def run_full_sync(force: bool = False):
                         book = existing.scalar_one_or_none()
                         tags_json = json.dumps(hc_book.tags) if hc_book.tags else None
                         genres_json = json.dumps(hc_book.genres)
+                        contributors_json = json.dumps(hc_book.contributors) if hc_book.contributors else None
 
                         if book:
                             # If title changed, clear cached Google/OL matches so
@@ -2403,6 +2449,7 @@ async def run_full_sync(force: bool = False):
                             book.cover_image_url = hc_book.image_url
                             book.tags = tags_json
                             book.genres = genres_json
+                            book.contributors = contributors_json
                             book.rating = hc_book.rating
                             book.pages = hc_book.pages
                             book.hardcover_slug = hc_book.slug
@@ -2434,6 +2481,7 @@ async def run_full_sync(force: bool = False):
                                 cover_image_url=hc_book.image_url,
                                 tags=tags_json,
                                 genres=genres_json,
+                                contributors=contributors_json,
                                 rating=hc_book.rating,
                                 pages=hc_book.pages,
                                 language=hc_book.language,
@@ -3037,6 +3085,25 @@ async def run_full_sync(force: bool = False):
                     await db.commit()
                     logger.info("Reapplied %d manual cover override(s)", manual_overrides)
 
+                # ABS book sync (IDs and covers)
+                if abs_books:
+                    scan_status.message = "Syncing book data from Audiobookshelf..."
+                    abs_books_synced = 0
+                    for book in all_books:
+                        if not book.is_owned:
+                            continue
+                        try:
+                            updated = await sync_book_from_abs(
+                                book, abs_url, abs_api_key, abs_books, abs_prefer
+                            )
+                            if updated:
+                                abs_books_synced += 1
+                        except Exception as e:
+                            logger.debug("ABS book sync failed for %s: %s", book.title, e)
+                    if abs_books_synced:
+                        await db.commit()
+                        logger.info("Synced %d book(s) from ABS", abs_books_synced)
+
                 scan_status.progress = 96.0
 
                 # Update author local book counts
@@ -3130,6 +3197,15 @@ async def refresh_single_book(book_id: int):
                     book = refreshed_book
 
             await _refresh_book_from_scratch(db, book)
+
+            # Sync ABS data for this book if enabled
+            abs_url, abs_api_key, abs_library_id, abs_enabled, prefer_abs = await get_abs_settings(db)
+            if abs_enabled and abs_url and abs_api_key and abs_library_id:
+                try:
+                    abs_books = await fetch_abs_books(abs_url, abs_api_key, abs_library_id)
+                    await sync_book_from_abs(book, abs_url, abs_api_key, abs_books, prefer_abs)
+                except Exception as e:
+                    logger.warning("Failed to sync ABS data during book refresh: %s", e)
 
             await flush_api_usage_batch(db)
             await db.commit()
@@ -3272,6 +3348,42 @@ async def refresh_single_author(author_id: int, mode: str = "full"):
                 )
                 await _refresh_book_from_scratch(db, book)
 
+            # Sync ABS data if enabled (author ID, ASIN, image, book IDs, covers)
+            abs_url, abs_api_key, abs_library_id, abs_enabled, prefer_abs = await get_abs_settings(db)
+            if abs_enabled and abs_url and abs_api_key and abs_library_id:
+                author_refresh_status.update(
+                    progress=96.0,
+                    message=f"Syncing Audiobookshelf data for {refreshed_author_name}...",
+                )
+                try:
+                    # Fetch ABS data
+                    abs_authors = await fetch_abs_authors(abs_url, abs_api_key, abs_library_id)
+                    abs_books = await fetch_abs_books(abs_url, abs_api_key, abs_library_id)
+                    
+                    # Re-fetch author with books for ABS sync
+                    author_for_abs_result = await db.execute(
+                        select(Author)
+                        .where(Author.id == author_id)
+                        .options(selectinload(Author.books).selectinload(Book.files))
+                    )
+                    author_for_abs = author_for_abs_result.scalar_one_or_none()
+                    
+                    if author_for_abs:
+                        # Sync author data from ABS
+                        await sync_author_from_abs(
+                            author_for_abs, abs_url, abs_api_key, abs_authors, prefer_abs
+                        )
+                        
+                        # Sync book data from ABS
+                        for book in author_for_abs.books:
+                            await sync_book_from_abs(
+                                book, abs_url, abs_api_key, abs_books, prefer_abs
+                            )
+                        
+                        logger.info("Synced ABS data for author: %s", author_for_abs.name)
+                except Exception as e:
+                    logger.warning("Failed to sync ABS data during author refresh: %s", e)
+
             author_refresh_status.update(
                 progress=98.0,
                 message=f"Finalizing refresh for {refreshed_author_name}...",
@@ -3365,6 +3477,7 @@ async def _refresh_book_from_scratch(db: AsyncSession, book: Book) -> None:
         if hc_book:
             tags_json = json.dumps(hc_book.tags) if hc_book.tags else None
             genres_json = json.dumps(hc_book.genres)
+            contributors_json = json.dumps(hc_book.contributors) if hc_book.contributors else None
             book.title = hc_book.title
             book.hardcover_slug = hc_book.slug
             book.description = hc_book.description
@@ -3372,6 +3485,7 @@ async def _refresh_book_from_scratch(db: AsyncSession, book: Book) -> None:
             book.cover_image_url = hc_book.image_url
             book.tags = tags_json
             book.genres = genres_json
+            book.contributors = contributors_json
             book.rating = hc_book.rating
             book.pages = hc_book.pages
             book.compilation = hc_book.compilation

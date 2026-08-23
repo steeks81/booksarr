@@ -411,6 +411,7 @@ async def get_book_metadata_info(book_id: int, db: AsyncSession = Depends(get_db
             for book_file in sorted(book.files, key=lambda bf: bf.file_path)
         ],
         editable_fields=sorted(EDITABLE_METADATA_FIELDS),
+        contributors=json.loads(book.contributors) if book.contributors else [],
     )
 
 

@@ -21,6 +21,8 @@ class Author(Base):
     manual_image_source: Mapped[str | None] = mapped_column(String, nullable=True)
     manual_image_url: Mapped[str | None] = mapped_column(String, nullable=True)
     manual_image_page_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    asin: Mapped[str | None] = mapped_column(String, nullable=True)
+    abs_author_id: Mapped[str | None] = mapped_column(String, nullable=True)
     book_count_local: Mapped[int] = mapped_column(Integer, default=0)
     book_count_total: Mapped[int] = mapped_column(Integer, default=0)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

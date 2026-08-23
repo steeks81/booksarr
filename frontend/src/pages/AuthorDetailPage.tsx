@@ -399,7 +399,12 @@ export default function AuthorDetailPage() {
         <div className="flex-1 min-w-0">
           <div className="mb-2">
             <div className={`flex ${isMobile ? "flex-col items-start gap-2" : "items-center gap-3"}`}>
-              <h1 className={`${isMobile ? "text-2xl" : "text-3xl"} font-bold`}>{author.name}</h1>
+              <div>
+                <h1 className={`${isMobile ? "text-2xl" : "text-3xl"} font-bold`}>{author.name}</h1>
+                {author.asin && (
+                  <span className="text-xs text-slate-500 font-mono">ASIN: {author.asin}</span>
+                )}
+              </div>
               <div ref={refreshMenuRef} className="relative">
                 <button
                   type="button"
@@ -448,9 +453,16 @@ export default function AuthorDetailPage() {
                         type="button"
                         onClick={() => {
                           setRefreshMenuOpen(false);
-                          if (settings?.abs_url && author?.name) {
+                          if (settings?.abs_url) {
                             const absUrl = settings.abs_url.replace(/\/$/, "");
-                            window.open(`${absUrl}/library/${settings.abs_library_id}/bookshelf?filter=authors.${encodeURIComponent(author.name)}`, "_blank", "noopener,noreferrer");
+                            if (author?.abs_author_id) {
+                              // Direct link using stored ABS author ID
+                              window.open(`${absUrl}/author/${author.abs_author_id}`, "_blank", "noopener,noreferrer");
+                            } else if (author?.name) {
+                              // Fallback: filter by author name (base64 encoded)
+                              const filterValue = btoa(author.name);
+                              window.open(`${absUrl}/library/${settings.abs_library_id}/bookshelf?filter=authors.${filterValue}`, "_blank", "noopener,noreferrer");
+                            }
                           }
                         }}
                         className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"

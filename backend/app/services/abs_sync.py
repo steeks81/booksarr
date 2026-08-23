@@ -1,5 +1,6 @@
 """Audiobookshelf integration service for syncing metadata."""
 
+import json
 import logging
 from dataclasses import dataclass
 
@@ -8,8 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import ABS_URL, ABS_API_KEY, ABS_LIBRARY_ID, CONFIG_DIR
-from backend.app.models import Author, Setting
-from backend.app.services.image_cache import cache_author_image
+from backend.app.models import Author, Book, Setting
+from backend.app.services.image_cache import cache_author_image, cache_book_cover
 
 logger = logging.getLogger("booksarr.abs_sync")
 
@@ -67,13 +68,31 @@ class AbsAuthor:
 
 
 @dataclass
+class AbsBook:
+    """Represents an audiobook from ABS."""
+    id: str
+    title: str
+    author_name: str | None
+    asin: str | None
+    isbn: str | None
+    rel_path: str
+    has_cover: bool
+    cover_path: str | None
+
+
+@dataclass
 class AbsSyncStatus:
     status: str  # idle, syncing, completed, failed
     total_authors: int = 0
-    processed: int = 0
-    updated: int = 0
-    skipped: int = 0
-    failed: int = 0
+    total_books: int = 0
+    authors_processed: int = 0
+    authors_updated: int = 0
+    authors_skipped: int = 0
+    authors_failed: int = 0
+    books_processed: int = 0
+    books_updated: int = 0
+    books_skipped: int = 0
+    books_failed: int = 0
     message: str = ""
 
 
@@ -131,6 +150,49 @@ async def fetch_abs_authors(url: str, api_key: str, library_id: str) -> list[Abs
         return authors
 
 
+async def fetch_abs_books(url: str, api_key: str, library_id: str) -> list[AbsBook]:
+    """Fetch all audiobooks from ABS library."""
+    url = await get_best_abs_url(url, api_key)
+    url = url.rstrip("/")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.get(
+            f"{url}/api/libraries/{library_id}/items",
+            headers=headers,
+            params={"limit": 0}  # Get all items
+        )
+        
+        if resp.status_code != 200:
+            logger.warning("Failed to fetch ABS books: status %d", resp.status_code)
+            return []
+        
+        data = resp.json()
+        books = []
+        
+        for item_data in data.get("results", []):
+            media = item_data.get("media", {})
+            metadata = media.get("metadata", {})
+            
+            # Get author name - could be string or list
+            author_name = metadata.get("authorName") or metadata.get("author")
+            if isinstance(author_name, list):
+                author_name = author_name[0] if author_name else None
+            
+            books.append(AbsBook(
+                id=item_data["id"],
+                title=metadata.get("title", ""),
+                author_name=author_name,
+                asin=metadata.get("asin"),
+                isbn=metadata.get("isbn"),
+                rel_path=item_data.get("relPath", ""),
+                has_cover=bool(media.get("coverPath")),
+                cover_path=media.get("coverPath"),
+            ))
+        
+        return books
+
+
 def normalize_author_name(name: str) -> str:
     """Normalize author name for matching."""
     # Remove common suffixes, lowercase, strip whitespace
@@ -142,21 +204,17 @@ def normalize_author_name(name: str) -> str:
     return name
 
 
-async def sync_author_image_from_abs(
+async def sync_author_from_abs(
     author: Author,
     abs_url: str,
     abs_api_key: str,
     abs_authors: list[AbsAuthor],
     prefer_abs: bool = False,
 ) -> bool:
-    """Sync author image from ABS if available.
+    """Sync author data from ABS (ID, ASIN, image).
     
-    Returns True if image was updated.
+    Returns True if any data was updated.
     """
-    # Skip if author already has an image and we're not preferring ABS
-    if author.image_cached_path and not prefer_abs:
-        return False
-    
     # Find matching ABS author by name
     normalized_name = normalize_author_name(author.name)
     matching_abs_author = None
@@ -166,37 +224,190 @@ async def sync_author_image_from_abs(
             matching_abs_author = abs_author
             break
     
-    if not matching_abs_author or not matching_abs_author.image_path:
+    if not matching_abs_author:
         return False
     
-    # Use internal URL for image download (faster)
-    internal_url = await get_best_abs_url(abs_url, abs_api_key)
-    internal_url = internal_url.rstrip("/")
-    image_url = f"{internal_url}/api/authors/{matching_abs_author.id}/image"
+    updated = False
     
-    # Download and cache the image
-    try:
-        cached_path = await cache_author_image(
-            author.id,
-            image_url,
-            source="abs",
-            overwrite=prefer_abs,
-            auth_header=f"Bearer {abs_api_key}",
-        )
+    # Always update ABS author ID if we have a match
+    if author.abs_author_id != matching_abs_author.id:
+        author.abs_author_id = matching_abs_author.id
+        updated = True
+    
+    # Update ASIN if ABS has one and we don't (or prefer ABS)
+    if matching_abs_author.asin and (not author.asin or prefer_abs):
+        author.asin = matching_abs_author.asin
+        updated = True
+    
+    # Sync image if ABS has one and we don't (or prefer ABS)
+    if matching_abs_author.image_path:
+        if not author.image_cached_path or prefer_abs:
+            # Use internal URL for image download (faster)
+            internal_url = await get_best_abs_url(abs_url, abs_api_key)
+            internal_url = internal_url.rstrip("/")
+            image_url = f"{internal_url}/api/authors/{matching_abs_author.id}/image"
+            
+            try:
+                cached_path = await cache_author_image(
+                    author.id,
+                    image_url,
+                    source="abs",
+                    overwrite=prefer_abs,
+                    auth_header=f"Bearer {abs_api_key}",
+                )
+                
+                if cached_path:
+                    author.image_url = image_url
+                    author.image_cached_path = cached_path
+                    logger.info("Synced ABS author image for %s", author.name)
+                    updated = True
+            except Exception as e:
+                logger.warning("Failed to cache ABS author image for %s: %s", author.name, e)
+    
+    if updated:
+        logger.debug("Synced author %s from ABS (id=%s, asin=%s)", 
+                    author.name, matching_abs_author.id, matching_abs_author.asin)
+    
+    return updated
+
+
+async def sync_book_from_abs(
+    book: Book,
+    abs_url: str,
+    abs_api_key: str,
+    abs_books: list[AbsBook],
+    prefer_abs: bool = False,
+    hc_client=None,
+) -> bool:
+    """Sync book data from ABS (ID, cover, and HC ID if missing).
+    
+    Matches by file path from book.files.
+    If hc_client is provided and book lacks hardcover_id, will search Hardcover.
+    Returns True if any data was updated.
+    """
+    if not book.files:
+        return False
+    
+    # Get file paths from book - extract folder paths (ABS stores folder, not file)
+    book_paths = set()
+    for bf in book.files:
+        if bf.file_path:
+            # Booksarr stores: Author/Series/Book/filename.epub
+            # ABS stores: Author/Series/Book (folder only)
+            path_parts = bf.file_path.split("/")
+            
+            # Remove filename to get folder path
+            if len(path_parts) > 1:
+                folder_path = "/".join(path_parts[:-1]).lower()
+                book_paths.add(folder_path)
+            
+            # Also try various subpaths for flexibility
+            for i in range(len(path_parts) - 1):  # -1 to exclude filename
+                subpath = "/".join(path_parts[i:-1]).lower()
+                if subpath:
+                    book_paths.add(subpath)
+    
+    if not book_paths:
+        return False
+    
+    # Find matching ABS book by path
+    matching_abs_book = None
+    for abs_book in abs_books:
+        abs_rel_path = abs_book.rel_path.lower().strip("/")
         
-        if cached_path:
-            author.image_url = image_url
-            author.image_cached_path = cached_path
-            logger.info("Synced ABS author image for %s", author.name)
-            return True
-    except Exception as e:
-        logger.warning("Failed to cache ABS author image for %s: %s", author.name, e)
+        for book_path in book_paths:
+            book_path_clean = book_path.strip("/")
+            
+            # Exact match
+            if abs_rel_path == book_path_clean:
+                matching_abs_book = abs_book
+                break
+            
+            # ABS path ends with book path (Booksarr might have shorter path)
+            if abs_rel_path.endswith("/" + book_path_clean):
+                matching_abs_book = abs_book
+                break
+            
+            # Book path ends with ABS path (Booksarr might have longer path)
+            if book_path_clean.endswith("/" + abs_rel_path):
+                matching_abs_book = abs_book
+                break
+                
+        if matching_abs_book:
+            break
     
-    return False
+    if not matching_abs_book:
+        return False
+    
+    updated = False
+    
+    # Always update ABS book ID if we have a match
+    if book.abs_book_id != matching_abs_book.id:
+        book.abs_book_id = matching_abs_book.id
+        updated = True
+    
+    # If book lacks Hardcover ID and we have an HC client, try to look it up
+    if not book.hardcover_id and hc_client:
+        author_name = book.author.name if book.author else None
+        try:
+            hc_id, contributors = await hc_client.search_book_by_title(
+                book.title, author_name
+            )
+            if hc_id:
+                # Store contributors even if we can't set HC ID (useful for co-author info)
+                if contributors:
+                    book.contributors = json.dumps(contributors)
+                    updated = True
+                
+                # Note: HC ID assignment happens here but may fail on commit
+                # if another book already has this HC ID (co-author/duplicate scenario)
+                # The unique constraint will catch it, but we log it as success here
+                book.hardcover_id = hc_id
+                logger.info(
+                    "Found Hardcover ID %d for book: %s (contributors: %s)",
+                    hc_id, book.title, contributors
+                )
+                updated = True
+        except Exception as e:
+            logger.debug("HC lookup failed for %s: %s", book.title, e)
+    
+    # Sync cover if ABS has one and we don't (or prefer ABS)
+    if matching_abs_book.has_cover:
+        if not book.cover_image_cached_path or prefer_abs:
+            # Use internal URL for cover download (faster)
+            internal_url = await get_best_abs_url(abs_url, abs_api_key)
+            internal_url = internal_url.rstrip("/")
+            cover_url = f"{internal_url}/api/items/{matching_abs_book.id}/cover"
+            
+            try:
+                cached_path = await cache_book_cover(
+                    book.id,
+                    cover_url,
+                    source="abs",
+                    overwrite=prefer_abs,
+                    auth_header=f"Bearer {abs_api_key}",
+                )
+                
+                if cached_path:
+                    book.cover_image_url = cover_url
+                    book.cover_image_cached_path = cached_path
+                    logger.info("Synced ABS cover for book: %s", book.title)
+                    updated = True
+            except Exception as e:
+                logger.warning("Failed to cache ABS cover for %s: %s", book.title, e)
+    
+    if updated:
+        logger.debug("Synced book %s from ABS (id=%s)", book.title, matching_abs_book.id)
+    
+    return updated
 
 
-async def sync_all_author_images(db: AsyncSession) -> AbsSyncStatus:
-    """Sync author images from ABS for all authors missing images."""
+async def sync_all_from_abs(db: AsyncSession, lookup_hardcover: bool = True) -> AbsSyncStatus:
+    """Sync all data from ABS (authors and books: IDs, ASINs, images/covers).
+    
+    If lookup_hardcover is True, will also search Hardcover for books
+    that don't have a hardcover_id.
+    """
     global _sync_status
     
     # Get ABS settings
@@ -210,61 +421,134 @@ async def sync_all_author_images(db: AsyncSession) -> AbsSyncStatus:
         _sync_status = AbsSyncStatus(status="failed", message="ABS not fully configured")
         return _sync_status
     
-    _sync_status = AbsSyncStatus(status="syncing", message="Fetching authors from ABS...")
+    _sync_status = AbsSyncStatus(status="syncing", message="Fetching data from Audiobookshelf...")
+    
+    # Get Hardcover client if we want to lookup missing HC IDs
+    hc_client = None
+    if lookup_hardcover:
+        from backend.app.services.hardcover import HardcoverClient
+        # Get Hardcover API key from settings
+        hc_api_key_result = await db.execute(
+            select(Setting).where(Setting.key == "hardcover_api_key")
+        )
+        hc_api_key_setting = hc_api_key_result.scalar_one_or_none()
+        if hc_api_key_setting and hc_api_key_setting.value:
+            hc_client = HardcoverClient(hc_api_key_setting.value)
+            logger.info("Hardcover client initialized for HC ID lookup")
     
     try:
-        # Fetch ABS authors
+        # Fetch ABS authors and books
         abs_authors = await fetch_abs_authors(url, api_key, library_id)
+        abs_books = await fetch_abs_books(url, api_key, library_id)
         
-        if not abs_authors:
-            _sync_status = AbsSyncStatus(status="failed", message="No authors found in ABS")
-            return _sync_status
+        logger.info("Fetched %d authors and %d books from ABS", len(abs_authors), len(abs_books))
         
-        logger.info("Fetched %d authors from ABS", len(abs_authors))
+        # Get all authors and books from database
+        author_result = await db.execute(select(Author))
+        authors = list(author_result.scalars().all())
         
-        # Get all authors from database
-        result = await db.execute(select(Author))
-        authors = list(result.scalars().all())
+        book_result = await db.execute(select(Book))
+        books = list(book_result.scalars().all())
         
         _sync_status.total_authors = len(authors)
-        _sync_status.message = f"Processing {len(authors)} authors..."
+        _sync_status.total_books = len(books)
+        _sync_status.message = f"Processing {len(authors)} authors and {len(books)} books..."
         
+        # Sync authors
         for author in authors:
-            _sync_status.processed += 1
-            
-            # Skip if already has image and not preferring ABS
-            if author.image_cached_path and not prefer_abs:
-                _sync_status.skipped += 1
-                continue
+            _sync_status.authors_processed += 1
             
             try:
-                updated = await sync_author_image_from_abs(
+                updated = await sync_author_from_abs(
                     author, url, api_key, abs_authors, prefer_abs
                 )
                 
                 if updated:
-                    _sync_status.updated += 1
+                    _sync_status.authors_updated += 1
                 else:
-                    _sync_status.skipped += 1
+                    _sync_status.authors_skipped += 1
                     
             except Exception as e:
                 logger.warning("Error syncing author %s: %s", author.name, e)
-                _sync_status.failed += 1
+                _sync_status.authors_failed += 1
+        
+        # Sync books (only lookup HC for books without hardcover_id)
+        books_needing_hc = [b for b in books if not b.hardcover_id]
+        logger.info(
+            "Books needing HC lookup: %d of %d total",
+            len(books_needing_hc), len(books)
+        )
+        
+        for book in books:
+            _sync_status.books_processed += 1
+            
+            try:
+                # Only pass hc_client for books that need HC lookup
+                client_for_book = hc_client if not book.hardcover_id else None
+                updated = await sync_book_from_abs(
+                    book, url, api_key, abs_books, prefer_abs, client_for_book
+                )
+                
+                if updated:
+                    # Try to flush this book's changes
+                    try:
+                        await db.flush()
+                        _sync_status.books_updated += 1
+                    except Exception as flush_error:
+                        # Likely unique constraint on hardcover_id
+                        # Roll back this book's changes and just store contributors
+                        await db.rollback()
+                        if book.contributors:
+                            # Re-fetch the book and only set contributors
+                            refreshed = await db.get(Book, book.id)
+                            if refreshed and not refreshed.contributors:
+                                refreshed.contributors = book.contributors
+                                await db.flush()
+                                logger.info(
+                                    "Stored contributors for %s (HC ID conflict): %s",
+                                    book.title, book.contributors
+                                )
+                                _sync_status.books_updated += 1
+                            else:
+                                _sync_status.books_skipped += 1
+                        else:
+                            _sync_status.books_skipped += 1
+                        logger.debug("HC ID conflict for %s: %s", book.title, flush_error)
+                else:
+                    _sync_status.books_skipped += 1
+                    
+            except Exception as e:
+                logger.warning("Error syncing book %s: %s", book.title, e)
+                _sync_status.books_failed += 1
         
         await db.commit()
         
         _sync_status.status = "completed"
-        _sync_status.message = f"Synced {_sync_status.updated} author images"
+        _sync_status.message = (
+            f"Synced {_sync_status.authors_updated} authors, "
+            f"{_sync_status.books_updated} books"
+        )
         logger.info(
-            "ABS author image sync complete: %d updated, %d skipped, %d failed",
-            _sync_status.updated, _sync_status.skipped, _sync_status.failed
+            "ABS sync complete: authors=%d updated/%d skipped/%d failed, "
+            "books=%d updated/%d skipped/%d failed",
+            _sync_status.authors_updated, _sync_status.authors_skipped, _sync_status.authors_failed,
+            _sync_status.books_updated, _sync_status.books_skipped, _sync_status.books_failed,
         )
         
     except Exception as e:
-        logger.exception("ABS author image sync failed")
+        logger.exception("ABS sync failed")
         _sync_status = AbsSyncStatus(status="failed", message=str(e))
+    finally:
+        if hc_client:
+            await hc_client.close()
     
     return _sync_status
+
+
+# Keep old function name as alias for backward compatibility
+async def sync_all_author_images(db: AsyncSession) -> AbsSyncStatus:
+    """Deprecated: Use sync_all_from_abs instead."""
+    return await sync_all_from_abs(db)
 
 
 

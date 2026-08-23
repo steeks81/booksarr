@@ -9,6 +9,8 @@ export interface Author {
   book_count_local: number;
   book_count_total: number;
   book_count_hidden: number;
+  asin: string | null;
+  abs_author_id: string | null;
 }
 
 export interface AuthorDirectoryEntry {
@@ -153,6 +155,7 @@ export interface BookInAuthor {
   owned_copy_count: number;
   local_files: LocalBookFile[];
   series_info: SeriesPositionInfo[];
+  abs_book_id: string | null;
 }
 
 export interface SeriesBookEntry {
@@ -228,6 +231,7 @@ export interface Book {
   owned_copy_count: number;
   local_files: LocalBookFile[];
   series_info: SeriesPositionInfo[];
+  abs_book_id: string | null;
 }
 
 export interface HiddenBook extends Book {
@@ -324,6 +328,7 @@ export interface BookMetadataInfoResponse {
   manual: BookMetadataValues;
   files: BookOpfMetadataFile[];
   editable_fields: BookMetadataField[];
+  contributors: string[];
 }
 
 export interface BookMetadataWriteOpfResponse {
@@ -440,6 +445,8 @@ export interface VisibilityCategories {
   upcoming_unreleased: boolean;
   pending_hardcover_records: boolean;
   likely_excerpts: boolean;
+  comic_issues: boolean;
+  anthologies: boolean;
 }
 
 export interface BuildInfo {

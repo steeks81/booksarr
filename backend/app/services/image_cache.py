@@ -87,6 +87,26 @@ async def cache_author_image(
     )
 
 
+async def cache_book_cover(
+    book_id: int,
+    url: str,
+    source: str = "remote",
+    *,
+    overwrite: bool = False,
+    auth_header: str | None = None,
+) -> str | None:
+    """Download and cache a book cover image from a URL."""
+    ext = _get_ext(url)
+    safe_source = source.lower().replace(" ", "_")
+    return await download_image(
+        url,
+        "books",
+        f"{safe_source}_{book_id}{ext}",
+        overwrite=overwrite,
+        auth_header=auth_header,
+    )
+
+
 async def cache_book_image(hardcover_id: int, url: str) -> str | None:
     ext = _get_ext(url)
     return await download_image(url, "books", f"hc_{hardcover_id}{ext}")

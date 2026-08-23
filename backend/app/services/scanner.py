@@ -532,15 +532,32 @@ def _collect_book_dir_artifacts(
     book_dir: Path,
     library_path: Path,
     progress_callback: Callable[[], None] | None = None,
+    _visited: set[Path] | None = None,
 ) -> list[tuple[str, str]]:
     """Return (rel_path, file_format) tuples for each distinct book artifact in a book directory.
 
     A book directory may contain multiple formats of the same book (epub + mobi + pdf + audiobook).
     Each artifact becomes one BookFile row.
+    
+    Recursively searches subdirectories to handle structures like Author/Series/Book/.
     """
+    # Track visited directories to avoid symlink loops
+    if _visited is None:
+        _visited = set()
+    
+    try:
+        real_path = book_dir.resolve()
+    except OSError:
+        return []
+    
+    if real_path in _visited:
+        return []
+    _visited.add(real_path)
+    
     artifacts: list[tuple[str, str]] = []
     has_audiobook_artifact = False
     has_audio_files = False
+    subdirectories: list[Path] = []
 
     for entry in sorted(book_dir.iterdir()):
         if progress_callback:
@@ -556,8 +573,20 @@ def _collect_book_dir_artifacts(
                 has_audiobook_artifact = True
             elif suffix in AUDIO_EXTENSIONS:
                 has_audio_files = True
+        elif entry.is_dir():
+            # Collect subdirectories for recursive search
+            subdirectories.append(entry)
 
     if has_audio_files and not has_audiobook_artifact:
         artifacts.append((str(book_dir.relative_to(library_path)), "audiobook"))
+
+    # Recursively search subdirectories (for Author/Series/Book/ structures)
+    for subdir in subdirectories:
+        artifacts.extend(_collect_book_dir_artifacts(
+            subdir,
+            library_path,
+            progress_callback=progress_callback,
+            _visited=_visited,
+        ))
 
     return artifacts

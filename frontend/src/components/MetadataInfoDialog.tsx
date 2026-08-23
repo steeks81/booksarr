@@ -232,6 +232,12 @@ export default function MetadataInfoDialog({
 
           {data && (
             <div className="space-y-6">
+              {data.contributors.length > 0 && (
+                <div className="rounded-lg border border-slate-700 bg-slate-800/50 px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-200 mb-2">Contributors</h3>
+                  <p className="text-sm text-slate-300">{data.contributors.join(", ")}</p>
+                </div>
+              )}
               <div className="rounded-lg border border-slate-700 bg-slate-800/50">
                 <div className="border-b border-slate-700 px-4 py-3">
                   <h3 className="text-sm font-semibold text-slate-200">Current and OPF Data</h3>

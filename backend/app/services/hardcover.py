@@ -86,6 +86,7 @@ class HCBook:
     tags: list[str] = field(default_factory=list)
     genres: list[str] = field(default_factory=list)
     series_refs: list[HCSeriesRef] = field(default_factory=list)
+    contributors: list[str] = field(default_factory=list)  # List of contributor names
 
 
 class HardcoverClient:
@@ -487,6 +488,21 @@ class HardcoverClient:
                         language = "translated"
                         break
 
+        # Extract contributor names for storage - only include authors, not illustrators/artists/etc
+        contributor_names = []
+        for contrib in (b.get("cached_contributors") or []):
+            if isinstance(contrib, dict):
+                role = (contrib.get("contribution") or "").lower()
+                # Skip non-author roles (illustrator, colorist, letterer, artist, etc.)
+                # Empty role is treated as author (common for primary authors)
+                # Note: "Adapter" is kept as they're writers adapting the text
+                non_author_roles = ["illustrat", "colorist", "letterer", "artist", "cover", "editor", "translat"]
+                if role and any(r in role for r in non_author_roles):
+                    continue
+                name = contrib.get("author", {}).get("name") if isinstance(contrib.get("author"), dict) else None
+                if name and name != "Various":
+                    contributor_names.append(name)
+
         return HCBook(
             id=b["id"],
             title=b["title"],
@@ -508,6 +524,7 @@ class HardcoverClient:
             tags=tags,
             genres=normalize_genres(genres),
             series_refs=series_refs,
+            contributors=contributor_names,
         )
 
     async def search_book_by_isbn(self, isbn: str) -> int | None:
@@ -529,6 +546,78 @@ class HardcoverClient:
                 return int(book_id)
         return None
 
+    async def search_book_by_title(
+        self, title: str, author_name: str | None = None
+    ) -> tuple[int | None, list[str]]:
+        """Search for a book by title, optionally filtering by author.
+        
+        Returns: (hardcover_id, contributors) where contributors is a list of author names.
+        """
+        search_query = title
+        if author_name:
+            search_query = f"{title} {author_name}"
+        
+        query = """
+        query($search_query: String!) {
+          search(query: $search_query, query_type: "books", per_page: 5, page: 1) {
+            results
+          }
+        }
+        """
+        try:
+            data = await self._query(query, {"search_query": search_query})
+        except HardcoverLookupError:
+            return None, []
+        
+        results = data.get("search", {}).get("results", {})
+        hits = results.get("hits", [])
+        
+        if not hits:
+            return None, []
+        
+        # Find best matching result
+        from backend.app.services.matcher import titles_match
+        
+        for hit in hits:
+            doc = hit.get("document", {})
+            hc_title = doc.get("title", "")
+            
+            if titles_match(title, hc_title):
+                book_id = doc.get("id")
+                if book_id:
+                    # Fetch full book data to get contributors
+                    contributors = await self.get_book_contributors(int(book_id))
+                    return int(book_id), contributors
+        
+        return None, []
+
+    async def get_book_contributors(self, book_id: int) -> list[str]:
+        """Get list of contributor names for a book."""
+        query = """
+        query($book_id: Int!) {
+          books(where: {id: {_eq: $book_id}}, limit: 1) {
+            contributions {
+              author { name }
+            }
+          }
+        }
+        """
+        try:
+            data = await self._query(query, {"book_id": book_id})
+        except HardcoverLookupError:
+            return []
+        
+        books = data.get("books", [])
+        if not books:
+            return []
+        
+        contributions = books[0].get("contributions", [])
+        return [
+            c.get("author", {}).get("name", "")
+            for c in contributions
+            if c.get("author", {}).get("name")
+        ]
+
 
 def _normalize_author_query(value: str) -> str:
     lowered = value.lower().strip()
@@ -538,13 +627,29 @@ def _normalize_author_query(value: str) -> str:
 
 
 def _has_primary_contribution_for_author(book: dict, author_id: int) -> bool:
-    primary_author_id = _get_primary_author_id(book)
-    return primary_author_id == author_id
-
-
-def _get_primary_author_id(book: dict) -> int | None:
+    """Check if the author has ANY primary contribution role for this book.
+    
+    This supports co-authored books where multiple authors have equal primary status.
+    For example, Brian Herbert and Kevin J. Anderson both have contribution=null
+    on their Dune collaborations.
+    """
     contributions = book.get("contributions") or []
-    primary_rows: list[tuple[int, str]] = []
+    for contribution_row in contributions:
+        if not isinstance(contribution_row, dict):
+            continue
+        contributor_author_id = contribution_row.get("author_id")
+        if contributor_author_id != author_id:
+            continue
+        role = str(contribution_row.get("contribution") or "").strip().lower()
+        if _is_primary_contribution_role(role):
+            return True
+    return False
+
+
+def _get_primary_author_ids(book: dict) -> list[int]:
+    """Get all author IDs with primary contribution roles."""
+    contributions = book.get("contributions") or []
+    primary_ids: list[int] = []
 
     for contribution_row in contributions:
         if not isinstance(contribution_row, dict):
@@ -554,16 +659,14 @@ def _get_primary_author_id(book: dict) -> int | None:
             continue
         role = str(contribution_row.get("contribution") or "").strip().lower()
         if _is_primary_contribution_role(role):
-            primary_rows.append((contributor_author_id, role))
+            primary_ids.append(contributor_author_id)
 
-    if not primary_rows:
-        return None
+    return primary_ids
 
-    blank_role_primary = next((author_id for author_id, role in primary_rows if not role), None)
-    if blank_role_primary is not None:
-        return blank_role_primary
 
-    return primary_rows[0][0]
+def _get_primary_author_count(book: dict) -> int:
+    """Count the number of primary authors for anthology detection."""
+    return len(_get_primary_author_ids(book))
 
 
 def _is_primary_contribution_role(role: str) -> bool:

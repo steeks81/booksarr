@@ -54,6 +54,8 @@ class Book(Base):
     manual_language: Mapped[str | None] = mapped_column(String, nullable=True)
     manual_series_name: Mapped[str | None] = mapped_column(String, nullable=True)
     manual_series_position: Mapped[float | None] = mapped_column(Float, nullable=True)
+    abs_book_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    contributors: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array of contributor names
     tags: Mapped[str | None] = mapped_column(Text, nullable=True)
     genres: Mapped[str | None] = mapped_column(Text, nullable=True)
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)

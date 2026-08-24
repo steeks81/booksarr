@@ -297,6 +297,39 @@ export default function BookCard({
                 >
                   Choose Poster
                 </button>
+                <div className="my-1 border-t border-slate-700" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeMenu();
+                    refreshBook.mutate(book.id);
+                  }}
+                  disabled={refreshBook.isPending}
+                  className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Refresh
+                </button>
+                <BookDownloadSelector
+                  bookId={book.id}
+                  localFiles={book.local_files}
+                  disabled={!book.is_owned}
+                  align="left"
+                  direction="down"
+                  wrapperClassName="flex w-full"
+                  menuWidthClassName="w-[18rem]"
+                  onDownloadStart={closeMenu}
+                  renderTrigger={({ toggle, disabled, hasMultiple }) => (
+                    <button
+                      type="button"
+                      onClick={toggle}
+                      disabled={disabled}
+                      className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {hasMultiple ? "Download..." : "Download Book"}
+                    </button>
+                  )}
+                />
+                <div className="my-1 border-t border-slate-700" />
                 {book.is_owned && book.local_files.length > 0 && settings?.abs_enabled && (
                   <button
                     type="button"
@@ -390,37 +423,23 @@ export default function BookCard({
                 >
                   Search IRC
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeMenu();
-                    refreshBook.mutate(book.id);
-                  }}
-                  disabled={refreshBook.isPending}
-                  className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Refresh
-                </button>
-                <BookDownloadSelector
-                  bookId={book.id}
-                  localFiles={book.local_files}
-                  disabled={!book.is_owned}
-                  align="left"
-                  direction="down"
-                  wrapperClassName="flex w-full"
-                  menuWidthClassName="w-[18rem]"
-                  onDownloadStart={closeMenu}
-                  renderTrigger={({ toggle, disabled, hasMultiple }) => (
-                    <button
-                      type="button"
-                      onClick={toggle}
-                      disabled={disabled}
-                      className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {hasMultiple ? "Download..." : "Download Book"}
-                    </button>
-                  )}
-                />
+                {settings?.shelfmark_url && book.title && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeMenu();
+                      const baseUrl = settings.shelfmark_url.replace(/\/$/, "");
+                      const params = new URLSearchParams({ q: book.title });
+                      if (authorName) params.set("author", authorName);
+                      params.set("content_type", "ebook");
+                      window.open(`${baseUrl}/?${params.toString()}`, "_blank", "noopener,noreferrer");
+                    }}
+                    className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                  >
+                    Search Shelfmark
+                  </button>
+                )}
+                <div className="my-1 border-t border-slate-700" />
                 <button
                   type="button"
                   onClick={() => {

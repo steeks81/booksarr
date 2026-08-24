@@ -25,6 +25,7 @@ export default function App() {
         <Route path="/settings/metadata-refreshes" element={<SettingsPage section="metadata-refreshes" />} />
         <Route path="/settings/integrations" element={<SettingsPage section="integrations" />} />
         <Route path="/settings/audiobookshelf" element={<SettingsPage section="audiobookshelf" />} />
+        <Route path="/settings/shelfmark" element={<SettingsPage section="shelfmark" />} />
         <Route path="/settings/unmatched-files" element={<UnmatchedFilesPage />} />
         <Route path="/settings/irc" element={<IrcSettingsPage />} />
         <Route path="/settings/logs" element={<LogsPage />} />

@@ -92,7 +92,7 @@ const EMPTY_SCAN_SOURCE = {
   failure_reasons: {},
 };
 
-type SettingsSection = "api-keys" | "profiles" | "metadata-refreshes" | "integrations" | "audiobookshelf";
+type SettingsSection = "api-keys" | "profiles" | "metadata-refreshes" | "integrations" | "audiobookshelf" | "shelfmark";
 
 const SECTION_META: Record<SettingsSection, { title: string; description: string }> = {
   "api-keys": {
@@ -114,6 +114,10 @@ const SECTION_META: Record<SettingsSection, { title: string; description: string
   audiobookshelf: {
     title: "Audiobookshelf",
     description: "Connect to Audiobookshelf to sync author images, book covers, and metadata.",
+  },
+  shelfmark: {
+    title: "Shelfmark",
+    description: "Connect to Shelfmark to search and download books from Anna's Archive.",
   },
 };
 
@@ -152,6 +156,8 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
   const [absLibraryId, setAbsLibraryId] = useState("");
   const [preferAbsMetadata, setPreferAbsMetadata] = useState(false);
   const [openOwnedInAbs, setOpenOwnedInAbs] = useState(false);
+  const [shelfmarkUrl, setShelfmarkUrl] = useState("");
+  const [shelfmarkSaved, setShelfmarkSaved] = useState(false);
   const [absTestResult, setAbsTestResult] = useState<{
     success: boolean;
     message: string;
@@ -905,6 +911,18 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
                   Search and download books via IRC DCC transfers.
                 </p>
               </a>
+              <a
+                href="/settings/shelfmark"
+                className="block rounded-lg border border-slate-600 bg-slate-700/50 p-4 hover:bg-slate-700 transition-colors"
+              >
+                <div className="flex items-center gap-3 mb-2">
+                  <div className={`w-2 h-2 rounded-full ${settings?.shelfmark_url ? "bg-emerald-400" : "bg-slate-500"}`} />
+                  <h4 className="font-medium text-slate-200">Shelfmark</h4>
+                </div>
+                <p className="text-sm text-slate-400">
+                  Search and download books from Anna's Archive.
+                </p>
+              </a>
             </div>
           </div>
         </>
@@ -1153,6 +1171,84 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
           </p>
         )}
       </div>
+        </>
+      )}
+
+      {section === "shelfmark" && (
+        <>
+          <div className="bg-slate-800 rounded-lg border border-slate-700 p-6 mb-6">
+            <div className="flex items-start justify-between gap-6">
+              <div>
+                <h3 className="text-lg font-semibold mb-2">Connection</h3>
+                <p className="text-sm text-slate-400">
+                  Connect to your Shelfmark instance to enable "Search Shelfmark" links on missing books.
+                </p>
+              </div>
+              <div className="text-right">
+                {settings?.shelfmark_url ? (
+                  <>
+                    <div className="text-sm font-medium text-emerald-400">configured</div>
+                    <div className="text-xs text-slate-500 mt-1">{settings.shelfmark_url}</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-sm font-medium text-slate-500">not configured</div>
+                    <div className="text-xs text-slate-500 mt-1">Enter URL below</div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <div className="text-xs text-slate-400 mb-1">Shelfmark URL</div>
+              {settings?.shelfmark_url && (
+                <div className="text-xs text-slate-500 mb-1">
+                  Current: {settings.shelfmark_url}
+                  {settings.shelfmark_url_source === "environment" && (
+                    <span className="ml-1 text-blue-400">(ENV)</span>
+                  )}
+                </div>
+              )}
+              <input
+                value={shelfmarkUrl}
+                onChange={(e) => setShelfmarkUrl(e.target.value)}
+                placeholder={settings?.shelfmark_url || "https://shelfmark.example.com"}
+                className="w-full max-w-md rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-slate-200"
+              />
+            </div>
+
+            <div className="mt-6 flex items-center gap-4">
+              <button
+                onClick={async () => {
+                  if (!shelfmarkUrl.trim()) return;
+                  await updateSettings.mutateAsync({ shelfmark_url: shelfmarkUrl.trim() });
+                  setShelfmarkSaved(true);
+                  setShelfmarkUrl("");
+                  setTimeout(() => setShelfmarkSaved(false), 3000);
+                }}
+                disabled={!shelfmarkUrl.trim() || updateSettings.isPending}
+                className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {updateSettings.isPending ? "Saving..." : "Save"}
+              </button>
+              {shelfmarkSaved && (
+                <span className="text-sm text-emerald-400">Saved!</span>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-slate-800 rounded-lg border border-slate-700 p-6">
+            <h3 className="text-lg font-semibold mb-2">How It Works</h3>
+            <p className="text-sm text-slate-400 mb-4">
+              When configured, a "Search Shelfmark" button appears on missing books. Clicking it opens
+              Shelfmark with the book title and author pre-filled, letting you search Anna's Archive
+              and download directly.
+            </p>
+            <p className="text-sm text-slate-400">
+              Shelfmark handles Cloudflare challenges automatically, so downloads work even when
+              Anna's Archive has protection enabled.
+            </p>
+          </div>
         </>
       )}
     </div>

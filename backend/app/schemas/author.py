@@ -125,6 +125,10 @@ class UnmatchedLocalFile(BaseModel):
     file_format: str | None
     linked_book_id: int | None = None
     linked_book_title: str | None = None
+    linked_book_abs_id: str | None = None
+    linked_book_hardcover_id: int | None = None
+    linked_author_id: int | None = None
+    linked_author_name: str | None = None
     author_id: int | None = None
     author_name: str | None = None
 

@@ -31,7 +31,8 @@ _SECONDARY_CONTRIBUTION_MARKERS = (
     "illustrator",
     "translator",
     "contributor",
-    "collaborator",
+    # "collaborator" removed - catches legitimate co-authors like BH+KJA
+    # TODO: add settings to override these filters
     "goodreads author",
     "prólogo",
     "preface",

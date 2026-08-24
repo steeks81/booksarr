@@ -1,4 +1,5 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { Book, BookInAuthor } from "../types";
 import { getBookCoverPresentation, getImageUrl } from "../types";
@@ -219,9 +220,14 @@ export default function BookTable({
   const absLookup = useAbsLookupBook();
   const { data: settings } = useSettings();
   const [absLookupPending, setAbsLookupPending] = useState<number | null>(null);
+  const [absSearchPending, setAbsSearchPending] = useState<number | null>(null);
   const [coverPickerBook, setCoverPickerBook] = useState<{ id: number; title: string } | null>(null);
   const [ircSearchBook, setIrcSearchBook] = useState<{ id: number; title: string; authorName: string | null } | null>(null);
   const [metadataInfoBook, setMetadataInfoBook] = useState<{ id: number; title: string } | null>(null);
+  const [actionMenuBookId, setActionMenuBookId] = useState<number | null>(null);
+  const [actionMenuPosition, setActionMenuPosition] = useState<{ left: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
+  const actionMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [sortKey, setSortKey] = useState<TableSortKey | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
@@ -282,6 +288,65 @@ export default function BookTable({
     const index = sortedBooks.findIndex((book) => book.id === scrollRequest.id);
     virtualRows.scrollToIndex(index === -1 ? scrollRequest.index : index);
   }, [scrollRequest, sortedBooks, virtualRows.scrollToIndex]);
+
+  useEffect(() => {
+    if (!actionMenuBookId) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (actionMenuRef.current?.contains(target) || actionMenuTriggerRef.current?.contains(target)) {
+        return;
+      }
+      setActionMenuBookId(null);
+      setActionMenuPosition(null);
+    };
+
+    const handleScroll = () => {
+      setActionMenuBookId(null);
+      setActionMenuPosition(null);
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("scroll", handleScroll, true);
+    window.addEventListener("resize", handleScroll);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("scroll", handleScroll, true);
+      window.removeEventListener("resize", handleScroll);
+    };
+  }, [actionMenuBookId]);
+
+  const openActionMenu = useCallback((bookId: number, triggerElement: HTMLButtonElement) => {
+    if (actionMenuBookId === bookId) {
+      setActionMenuBookId(null);
+      setActionMenuPosition(null);
+      return;
+    }
+    const rect = triggerElement.getBoundingClientRect();
+    const menuWidth = 224; // w-56 = 14rem = 224px
+    const menuHeight = 420; // estimated menu height
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const spaceAbove = rect.top - 8;
+    const showAbove = spaceBelow < menuHeight && spaceAbove > spaceBelow;
+    
+    const left = Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8);
+    let maxHeight: number;
+    
+    if (showAbove) {
+      // Position above: use bottom anchoring (distance from viewport bottom to button top)
+      const bottom = window.innerHeight - rect.top + 4;
+      maxHeight = Math.min(menuHeight, spaceAbove);
+      setActionMenuPosition({ left: Math.max(8, left), bottom, top: undefined, maxHeight: Math.max(200, maxHeight) });
+    } else {
+      // Position below button
+      const top = rect.bottom + 4;
+      maxHeight = Math.min(menuHeight, spaceBelow);
+      setActionMenuPosition({ left: Math.max(8, left), top, bottom: undefined, maxHeight: Math.max(200, maxHeight) });
+    }
+    
+    setActionMenuBookId(bookId);
+    actionMenuTriggerRef.current = triggerElement;
+  }, [actionMenuBookId]);
 
   const toggleExpanded = (bookId: number) => {
     setExpandedRows((current) => {
@@ -444,134 +509,26 @@ export default function BookTable({
                     </td>
                     <td className="px-4 py-2 text-right">
                       <div className="flex items-center justify-end gap-2">
-                        <ActionIconButton
-                          label="Metadata info"
-                          onClick={() => setMetadataInfoBook({ id: book.id, title: book.title })}
-                          preferBelow={index === 0}
-                        >
-                          <span className="text-sm font-semibold leading-none">i</span>
-                        </ActionIconButton>
-                        <ActionIconButton
-                          label="Choose poster"
-                          onClick={() => setCoverPickerBook({ id: book.id, title: book.title })}
-                          preferBelow={index === 0}
-                        >
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2 1.586-1.586a2 2 0 012.828 0L20 14m-6-8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                          </svg>
-                        </ActionIconButton>
-                        <ActionIconButton
-                          label="Search IRC"
-                          onClick={() => setIrcSearchBook({
-                            id: book.id,
-                            title: book.title,
-                            authorName: authorName ?? contextAuthorName ?? null,
-                          })}
-                          preferBelow={index === 0}
-                        >
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35" />
-                            <circle cx="11" cy="11" r="6" strokeWidth={2} />
-                          </svg>
-                        </ActionIconButton>
-                        {book.is_owned && localFiles.length > 0 && settings?.abs_enabled && (
-                          <ActionIconButton
-                            label={absLookupPending === book.id ? "Looking up..." : "Open in Audiobookshelf"}
-                            onClick={async () => {
-                              // Use stored abs_book_id if available for instant link
-                              if (book.abs_book_id && settings?.abs_url) {
-                                const absUrl = settings.abs_url.replace(/\/$/, "");
-                                window.open(`${absUrl}/item/${book.abs_book_id}`, "_blank", "noopener,noreferrer");
-                                return;
-                              }
-                              // Fallback: lookup by file path
-                              const filePath = localFiles[0]?.file_path;
-                              if (!filePath) return;
-                              setAbsLookupPending(book.id);
-                              try {
-                                const result = await absLookup.mutateAsync(filePath);
-                                if (result.found && result.abs_url) {
-                                  window.open(result.abs_url, "_blank", "noopener,noreferrer");
-                                }
-                              } finally {
-                                setAbsLookupPending(null);
-                              }
-                            }}
-                            disabled={absLookupPending === book.id}
-                            preferBelow={index === 0}
+                        {/* Split button: Metadata Info + dropdown */}
+                        <div className="inline-flex">
+                          <button
+                            type="button"
+                            onClick={() => setMetadataInfoBook({ id: book.id, title: book.title })}
+                            className="inline-flex items-center rounded-l-md border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-600"
                           >
-                            <svg className={`h-4 w-4 ${absLookupPending === book.id ? "animate-pulse" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                            </svg>
-                          </ActionIconButton>
-                        )}
-                        {book.hardcover_slug && (
-                          <ActionIconButton
-                            label="Open in Hardcover"
-                            onClick={() => window.open(`https://hardcover.app/books/${book.hardcover_slug}`, "_blank", "noopener,noreferrer")}
-                            preferBelow={index === 0}
+                            Metadata Info
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => openActionMenu(book.id, e.currentTarget)}
+                            className="inline-flex items-center rounded-r-md border border-l-0 border-slate-600 bg-slate-700 px-2 py-2 text-slate-400 transition-colors hover:bg-slate-600 hover:text-slate-200"
                           >
                             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                             </svg>
-                          </ActionIconButton>
-                        )}
-                        {!book.hardcover_slug && book.title && (
-                          <ActionIconButton
-                            label="Search Hardcover"
-                            onClick={() => window.open(`https://hardcover.app/search?q=${encodeURIComponent(book.title)}`, "_blank", "noopener,noreferrer")}
-                            preferBelow={index === 0}
-                          >
-                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 11h6M11 8v6" />
-                            </svg>
-                          </ActionIconButton>
-                        )}
-                        <BookDownloadSelector
-                          bookId={book.id}
-                          localFiles={localFiles}
-                          disabled={!book.is_owned}
-                          direction={index === 0 ? "down" : "up"}
-                          renderTrigger={({ toggle, disabled, hasMultiple }) => (
-                            <ActionIconButton
-                              label={
-                                disabled
-                                  ? "No local file available"
-                                  : hasMultiple
-                                    ? "Choose file to download"
-                                    : "Download file"
-                              }
-                              onClick={toggle}
-                              disabled={disabled}
-                              preferBelow={index === 0}
-                            >
-                              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" />
-                              </svg>
-                            </ActionIconButton>
-                          )}
-                        />
-                        <ActionIconButton
-                          label="Scan author folders and re-import metadata"
-                          onClick={() => refreshBook.mutate(book.id)}
-                          disabled={refreshBook.isPending}
-                          preferBelow={index === 0}
-                        >
-                          <svg className={`h-4 w-4 ${refreshBook.isPending && refreshBook.variables === book.id ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m14.836 2A8.001 8.001 0 005.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.356-2m15.356 2H15" />
-                          </svg>
-                        </ActionIconButton>
-                        <ActionIconButton
-                          label="Hide book"
-                          onClick={() => setBookVisibility.mutate({ bookId: book.id, action: "hide" })}
-                          disabled={setBookVisibility.isPending}
-                          preferBelow={index === 0}
-                        >
-                          <svg className={`h-4 w-4 ${setBookVisibility.isPending && setBookVisibility.variables?.bookId === book.id ? "animate-pulse" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.98 8.223A10.477 10.477 0 0112 5c4.478 0 8.268 2.943 9.542 7-.435 1.384-1.18 2.625-2.153 3.646M6.228 6.228A9.956 9.956 0 002.458 12c1.274 4.057 5.064 7 9.542 7 1.671 0 3.254-.41 4.646-1.153M6.228 6.228L3 3m3.228 3.228l3.65 3.65m0 0a3 3 0 104.243 4.243m-4.243-4.243L14.12 14.12m0 0L21 21" />
-                          </svg>
-                        </ActionIconButton>
+                          </button>
+                        </div>
+                        {/* Expand/collapse button */}
                         <ActionIconButton
                           label={isExpanded ? "Hide file paths" : "Show file paths"}
                           onClick={() => toggleExpanded(book.id)}
@@ -654,6 +611,217 @@ export default function BookTable({
         open={metadataInfoBook !== null}
         onClose={() => setMetadataInfoBook(null)}
       />
+      {/* Action menu portal */}
+      {actionMenuBookId !== null && actionMenuPosition && createPortal(
+        (() => {
+          const menuBook = sortedBooks.find((b) => b.id === actionMenuBookId);
+          if (!menuBook) return null;
+          const menuLocalFiles = menuBook.local_files ?? [];
+          const menuAuthorName = isFullBook(menuBook) ? menuBook.author_name : null;
+          return (
+            <div
+              ref={actionMenuRef}
+              className="fixed z-[140] w-56 overflow-y-auto rounded-lg border border-slate-600 bg-slate-900/95 p-1 shadow-xl"
+              style={{ 
+                left: actionMenuPosition.left, 
+                top: actionMenuPosition.top, 
+                bottom: actionMenuPosition.bottom, 
+                maxHeight: actionMenuPosition.maxHeight 
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuBookId(null);
+                  setActionMenuPosition(null);
+                  setMetadataInfoBook({ id: menuBook.id, title: menuBook.title });
+                }}
+                className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+              >
+                Metadata Info
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuBookId(null);
+                  setActionMenuPosition(null);
+                  setCoverPickerBook({ id: menuBook.id, title: menuBook.title });
+                }}
+                className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+              >
+                Choose Poster
+              </button>
+              <div className="my-1 border-t border-slate-700" />
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuBookId(null);
+                  setActionMenuPosition(null);
+                  refreshBook.mutate(menuBook.id);
+                }}
+                disabled={refreshBook.isPending}
+                className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Refresh
+              </button>
+              <BookDownloadSelector
+                bookId={menuBook.id}
+                localFiles={menuLocalFiles}
+                disabled={!menuBook.is_owned}
+                align="left"
+                direction="down"
+                wrapperClassName="flex w-full"
+                menuWidthClassName="w-[18rem]"
+                onDownloadStart={() => {
+                  setActionMenuBookId(null);
+                  setActionMenuPosition(null);
+                }}
+                renderTrigger={({ toggle, disabled, hasMultiple }) => (
+                  <button
+                    type="button"
+                    onClick={toggle}
+                    disabled={disabled}
+                    className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {hasMultiple ? "Download..." : "Download Book"}
+                  </button>
+                )}
+              />
+              <div className="my-1 border-t border-slate-700" />
+              {menuBook.is_owned && menuLocalFiles.length > 0 && settings?.abs_enabled && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (menuBook.abs_book_id && settings?.abs_url) {
+                      const absUrl = settings.abs_url.replace(/\/$/, "");
+                      setActionMenuBookId(null);
+                      setActionMenuPosition(null);
+                      window.open(`${absUrl}/item/${menuBook.abs_book_id}`, "_blank", "noopener,noreferrer");
+                      return;
+                    }
+                    const filePath = menuLocalFiles[0]?.file_path;
+                    if (!filePath) return;
+                    setAbsLookupPending(menuBook.id);
+                    try {
+                      const result = await absLookup.mutateAsync(filePath);
+                      if (result.found && result.abs_url) {
+                        setActionMenuBookId(null);
+                        setActionMenuPosition(null);
+                        window.open(result.abs_url, "_blank", "noopener,noreferrer");
+                      }
+                    } finally {
+                      setAbsLookupPending(null);
+                    }
+                  }}
+                  disabled={absLookupPending === menuBook.id}
+                  className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {absLookupPending === menuBook.id ? "Looking up..." : "Open in Audiobookshelf"}
+                </button>
+              )}
+              {!menuBook.is_owned && settings?.abs_enabled && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setAbsSearchPending(menuBook.id);
+                    try {
+                      const result = await absLookup.mutateAsync(menuBook.title);
+                      if (result.found && result.abs_url) {
+                        setActionMenuBookId(null);
+                        setActionMenuPosition(null);
+                        window.open(result.abs_url, "_blank", "noopener,noreferrer");
+                      } else {
+                        setActionMenuBookId(null);
+                        setActionMenuPosition(null);
+                        alert("Not found in Audiobookshelf");
+                      }
+                    } finally {
+                      setAbsSearchPending(null);
+                    }
+                  }}
+                  disabled={absSearchPending === menuBook.id}
+                  className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {absSearchPending === menuBook.id ? "Searching..." : "Search Audiobookshelf"}
+                </button>
+              )}
+              {menuBook.hardcover_slug && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuBookId(null);
+                    setActionMenuPosition(null);
+                    window.open(`https://hardcover.app/books/${menuBook.hardcover_slug}`, "_blank", "noopener,noreferrer");
+                  }}
+                  className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                >
+                  Open in Hardcover
+                </button>
+              )}
+              {!menuBook.hardcover_slug && menuBook.title && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuBookId(null);
+                    setActionMenuPosition(null);
+                    window.open(`https://hardcover.app/search?q=${encodeURIComponent(menuBook.title)}`, "_blank", "noopener,noreferrer");
+                  }}
+                  className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                >
+                  Search Hardcover
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuBookId(null);
+                  setActionMenuPosition(null);
+                  setIrcSearchBook({
+                    id: menuBook.id,
+                    title: menuBook.title,
+                    authorName: menuAuthorName ?? contextAuthorName ?? null,
+                  });
+                }}
+                className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+              >
+                Search IRC
+              </button>
+              {settings?.shelfmark_url && menuBook.title && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuBookId(null);
+                    setActionMenuPosition(null);
+                    const baseUrl = settings.shelfmark_url.replace(/\/$/, "");
+                    const params = new URLSearchParams({ q: menuBook.title });
+                    const author = menuAuthorName ?? contextAuthorName;
+                    if (author) params.set("author", author);
+                    params.set("content_type", "ebook");
+                    window.open(`${baseUrl}/?${params.toString()}`, "_blank", "noopener,noreferrer");
+                  }}
+                  className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                >
+                  Search Shelfmark
+                </button>
+              )}
+              <div className="my-1 border-t border-slate-700" />
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuBookId(null);
+                  setActionMenuPosition(null);
+                  setBookVisibility.mutate({ bookId: menuBook.id, action: "hide" });
+                }}
+                disabled={setBookVisibility.isPending}
+                className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-rose-300 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Hide Book
+              </button>
+            </div>
+          );
+        })(),
+        document.body
+      )}
     </>
   );
 }

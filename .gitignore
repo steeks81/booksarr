@@ -26,3 +26,6 @@ Thumbs.db
 # Environment
 .env
 .smbdelete*
+
+# AI Context (local only)
+AI_CONTEXT.md

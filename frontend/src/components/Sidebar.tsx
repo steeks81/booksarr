@@ -25,6 +25,7 @@ const settingsLinks: { to: string; label: string; children?: { to: string; label
     children: [
       { to: "/settings/audiobookshelf", label: "Audiobookshelf" },
       { to: "/settings/irc", label: "IRC" },
+      { to: "/settings/shelfmark", label: "Shelfmark" },
     ],
   },
   { to: "/settings/logs", label: "Logs" },

@@ -66,6 +66,12 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     prefer_abs_metadata = settings.get("prefer_abs_metadata", "false").lower() == "true"
     open_owned_in_abs = settings.get("open_owned_in_abs", "false").lower() == "true"
 
+    # Shelfmark integration
+    db_shelfmark_url = settings.get("shelfmark_url", "")
+    shelfmark_url_from_env = bool(os.environ.get("SHELFMARK_URL", ""))
+    shelfmark_url = db_shelfmark_url or os.environ.get("SHELFMARK_URL", "")
+    shelfmark_url_source = "database" if db_shelfmark_url else ("environment" if shelfmark_url_from_env else "none")
+
     last_scan = settings.get("last_scan_at")
     last_scan_summary = None
     raw_summary = settings.get("last_scan_summary")
@@ -103,6 +109,9 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         abs_library_id_source=abs_library_id_source,
         prefer_abs_metadata=prefer_abs_metadata,
         open_owned_in_abs=open_owned_in_abs,
+        shelfmark_url=shelfmark_url,
+        shelfmark_url_from_env=shelfmark_url_from_env,
+        shelfmark_url_source=shelfmark_url_source,
         library_path=str(BOOKS_DIR),
         last_scan_at=last_scan,
         last_scan_summary=last_scan_summary,
@@ -137,6 +146,9 @@ async def update_settings(body: SettingsUpdate, db: AsyncSession = Depends(get_d
 
     if body.open_owned_in_abs is not None:
         await _upsert_setting(db, "open_owned_in_abs", "true" if body.open_owned_in_abs else "false")
+
+    if body.shelfmark_url is not None:
+        await _upsert_setting(db, "shelfmark_url", body.shelfmark_url)
 
     if body.scan_interval_hours is not None:
         await _upsert_setting(db, "scan_interval_hours", str(body.scan_interval_hours))

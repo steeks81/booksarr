@@ -110,6 +110,10 @@ export interface UnmatchedLocalFile {
   file_format: string | null;
   linked_book_id: number | null;
   linked_book_title: string | null;
+  linked_book_abs_id: string | null;
+  linked_book_hardcover_id: number | null;
+  linked_author_id: number | null;
+  linked_author_name: string | null;
   author_id: number | null;
   author_name: string | null;
 }
@@ -412,6 +416,9 @@ export interface Settings {
   abs_library_id_source: "database" | "environment" | "none";
   prefer_abs_metadata: boolean;
   open_owned_in_abs: boolean;
+  shelfmark_url: string;
+  shelfmark_url_from_env: boolean;
+  shelfmark_url_source: "database" | "environment" | "none";
   library_path: string;
   last_scan_at: string | null;
   last_scan_summary: ScanSummary | null;

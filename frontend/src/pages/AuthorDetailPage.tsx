@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuthor, useAuthorRefreshStatus, useMergeAuthorDirectories, useRefreshAuthor, useRemoveAuthor } from "../api/authors";
 import { useSettings } from "../api/settings";
 import { getImageUrl } from "../types";
@@ -14,6 +14,7 @@ import SearchBar from "../components/SearchBar";
 import { BookFilterDropdown, bookMatchesFilter, type BookFilterKey } from "../components/BookFilterDropdown";
 import AuthorPortraitPickerDialog from "../components/AuthorPortraitPickerDialog";
 import FixAuthorMatchDialog from "../components/FixAuthorMatchDialog";
+import MetadataInfoDialog from "../components/MetadataInfoDialog";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { compareTitles } from "../utils/titleSort";
 
@@ -58,6 +59,7 @@ function UnmatchedFileTag({ format }: { format: string | null }) {
 
 export default function AuthorDetailPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { id } = useParams<{ id: string }>();
   const authorId = Number(id);
   const { data: author, isLoading } = useAuthor(authorId);
@@ -81,8 +83,11 @@ export default function AuthorDetailPage() {
   const [mergeFoldersOpen, setMergeFoldersOpen] = useState(false);
   const [mergeTargetDirectoryId, setMergeTargetDirectoryId] = useState<number | null>(null);
   const [selectedBookIds, setSelectedBookIds] = useState<Set<number>>(new Set());
+  const [linkedFilePopoverPath, setLinkedFilePopoverPath] = useState<string | null>(null);
+  const [urlBookModal, setUrlBookModal] = useState<{ id: number; title: string } | null>(null);
   const portraitMenuRef = useRef<HTMLDivElement | null>(null);
   const refreshMenuRef = useRef<HTMLDivElement | null>(null);
+  const linkedFilePopoverRef = useRef<HTMLDivElement | null>(null);
   const authorName = author?.name ?? "Unknown author";
   const isAuthorRefreshRunning = authorRefreshStatus?.status === "refreshing";
   const isThisAuthorRefreshing = isAuthorRefreshRunning && authorRefreshStatus?.author_id === authorId;
@@ -151,6 +156,35 @@ export default function AuthorDetailPage() {
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [filterMenuOpen]);
+
+  useEffect(() => {
+    if (!linkedFilePopoverPath) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (linkedFilePopoverRef.current && !linkedFilePopoverRef.current.contains(event.target as Node)) {
+        setLinkedFilePopoverPath(null);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [linkedFilePopoverPath]);
+
+  // Handle ?book=ID URL param to open metadata modal
+  useEffect(() => {
+    const bookIdParam = searchParams.get("book");
+    if (!bookIdParam || !author?.books) return;
+    
+    const bookId = Number(bookIdParam);
+    const book = author.books.find((b) => b.id === bookId);
+    if (book) {
+      setUrlBookModal({ id: book.id, title: book.title });
+      // Clear the param from URL without navigation
+      searchParams.delete("book");
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, [author?.books, searchParams, setSearchParams]);
+
   const imgUrl = author ? getImageUrl(author.image_cached_path, author.image_url) : "";
 
   const searchNormalized = search.trim().toLowerCase();
@@ -518,6 +552,7 @@ export default function AuthorDetailPage() {
                     >
                       Fix Match
                     </button>
+                    <div className="my-1 border-t border-slate-700" />
                     {settings?.abs_enabled && author?.abs_author_id && (
                       <button
                         type="button"
@@ -739,16 +774,194 @@ export default function AuthorDetailPage() {
             </span>
           </div>
           <div className="divide-y divide-slate-700/50">
-            {filteredUnmatchedLocalFiles.map((file) => (
-              <div key={file.file_path} className="flex items-center gap-2 py-1.5">
-                <UnmatchedFileTag format={file.file_format} />
-                <code className="min-w-0 flex-1 truncate text-xs text-slate-300">{file.file_path}</code>
-                {file.linked_book_title && (
-                  <span className="shrink-0 text-[11px] text-amber-400">hidden: {file.linked_book_title}</span>
-                )}
-                <span className="shrink-0 text-xs text-slate-500">{formatFileSize(file.file_size)}</span>
-              </div>
-            ))}
+            {filteredUnmatchedLocalFiles.map((file) => {
+              // Extract a search-friendly title from the file path
+              const pathParts = file.file_path.split("/");
+              const fileName = pathParts[pathParts.length - 1] || file.file_name;
+              // Remove extension and clean up for search
+              const searchTitle = fileName
+                .replace(/\.(epub|pdf|mobi|azw3|azw|txt|fb2|cbz|cbr)$/i, "")
+                .replace(/^\d+(\.\d+)?\s*-\s*/, "") // Remove leading position numbers like "0.1 - " or "1 - "
+                .replace(/\s*\(\d{4}\)\s*$/, "") // Remove trailing year like "(2012)"
+                .trim();
+
+              return (
+                <div key={file.file_path} className="py-1.5">
+                  <div className="flex items-center gap-2">
+                    <UnmatchedFileTag format={file.file_format} />
+                    <code className="min-w-0 flex-1 truncate text-xs text-slate-300">{file.file_path}</code>
+                    <span className="shrink-0 text-xs text-slate-500">{formatFileSize(file.file_size)}</span>
+                    {/* Warning icon for linked files - positioned between file size and action buttons */}
+                    {file.linked_book_id && (
+                      <div className="relative shrink-0">
+                        <button
+                          type="button"
+                          title="File linked to another author"
+                          onClick={() => setLinkedFilePopoverPath(linkedFilePopoverPath === file.file_path ? null : file.file_path)}
+                          className="rounded p-1 text-amber-400 transition-colors hover:bg-slate-700 hover:text-amber-300"
+                        >
+                          {/* Warning/exclamation icon */}
+                          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                          </svg>
+                        </button>
+                        {/* Popover for linked file info */}
+                        {linkedFilePopoverPath === file.file_path && (
+                          <div
+                            ref={linkedFilePopoverRef}
+                            className="absolute right-0 top-full z-30 mt-1 w-64 rounded-lg border border-slate-600 bg-slate-900/95 p-3 shadow-xl"
+                          >
+                            <div className="mb-2 text-xs font-semibold text-slate-300">Linked to Another Author</div>
+                            {file.linked_book_title && file.linked_author_id && file.linked_book_id && (
+                              <div className="mb-1 text-xs text-slate-400">
+                                <span className="text-slate-500">Book:</span>{" "}
+                                <a
+                                  href={`/authors/${file.linked_author_id}?book=${file.linked_book_id}`}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setLinkedFilePopoverPath(null);
+                                    window.open(`/authors/${file.linked_author_id}?book=${file.linked_book_id}`, "_blank", "noopener,noreferrer");
+                                  }}
+                                  className="text-slate-200 underline hover:text-slate-100"
+                                >
+                                  {file.linked_book_title}
+                                </a>
+                              </div>
+                            )}
+                            {file.linked_author_id && file.linked_author_name && (
+                              <div className="mb-2 text-xs text-slate-400">
+                                <span className="text-slate-500">Author:</span>{" "}
+                                <a
+                                  href={`/authors/${file.linked_author_id}`}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setLinkedFilePopoverPath(null);
+                                    window.open(`/authors/${file.linked_author_id}`, "_blank", "noopener,noreferrer");
+                                  }}
+                                  className="text-slate-200 underline hover:text-slate-100"
+                                >
+                                  {file.linked_author_name}
+                                </a>
+                              </div>
+                            )}
+                            {/* Action buttons for the linked book */}
+                            <div className="flex gap-1 border-t border-slate-700 pt-2">
+                              {settings?.abs_enabled && settings?.abs_url && file.linked_book_abs_id && (
+                                <button
+                                  type="button"
+                                  title="Open in Audiobookshelf"
+                                  onClick={() => {
+                                    setLinkedFilePopoverPath(null);
+                                    const absUrl = settings.abs_url!.replace(/\/$/, "");
+                                    window.open(`${absUrl}/item/${file.linked_book_abs_id}`, "_blank", "noopener,noreferrer");
+                                  }}
+                                  className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+                                >
+                                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                                  </svg>
+                                </button>
+                              )}
+                              {file.linked_book_hardcover_id && (
+                                <button
+                                  type="button"
+                                  title="Open in Hardcover"
+                                  onClick={() => {
+                                    setLinkedFilePopoverPath(null);
+                                    window.open(`https://hardcover.app/books/${file.linked_book_hardcover_id}`, "_blank", "noopener,noreferrer");
+                                  }}
+                                  className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+                                >
+                                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                                  </svg>
+                                </button>
+                              )}
+                              {settings?.shelfmark_url && file.linked_book_title && (
+                                <button
+                                  type="button"
+                                  title="Search Shelfmark"
+                                  onClick={() => {
+                                    setLinkedFilePopoverPath(null);
+                                    const baseUrl = settings.shelfmark_url!.replace(/\/$/, "");
+                                    const params = new URLSearchParams({ q: file.linked_book_title! });
+                                    if (file.linked_author_name) params.set("author", file.linked_author_name);
+                                    params.set("content_type", "ebook");
+                                    window.open(`${baseUrl}/?${params.toString()}`, "_blank", "noopener,noreferrer");
+                                  }}
+                                  className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+                                >
+                                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {/* Action buttons */}
+                    <div className="flex shrink-0 gap-1">
+                      {/* ABS: Open if we have abs_book_id, otherwise search */}
+                      {settings?.abs_enabled && settings?.abs_url && (
+                        <button
+                          type="button"
+                          title={file.linked_book_abs_id ? "Open in Audiobookshelf" : "Search Audiobookshelf"}
+                          onClick={() => {
+                            const absUrl = settings.abs_url!.replace(/\/$/, "");
+                            if (file.linked_book_abs_id) {
+                              window.open(`${absUrl}/item/${file.linked_book_abs_id}`, "_blank", "noopener,noreferrer");
+                            } else {
+                              window.open(`${absUrl}/library/${settings.abs_library_id}/bookshelf?filter=search.${encodeURIComponent(searchTitle)}`, "_blank", "noopener,noreferrer");
+                            }
+                          }}
+                          className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+                        >
+                          {/* Audio icon - always represents ABS */}
+                          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                          </svg>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        title="Search Hardcover"
+                        onClick={() => {
+                          const params = new URLSearchParams({ q: searchTitle });
+                          window.open(`https://hardcover.app/search?${params.toString()}`, "_blank", "noopener,noreferrer");
+                        }}
+                        className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+                      >
+                        {/* Open book icon - always represents Hardcover */}
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                        </svg>
+                      </button>
+                      {settings?.shelfmark_url && (
+                        <button
+                          type="button"
+                          title="Search Shelfmark"
+                          onClick={() => {
+                            const baseUrl = settings.shelfmark_url!.replace(/\/$/, "");
+                            const params = new URLSearchParams({ q: searchTitle });
+                            if (author?.name) params.set("author", author.name);
+                            params.set("content_type", "ebook");
+                            window.open(`${baseUrl}/?${params.toString()}`, "_blank", "noopener,noreferrer");
+                          }}
+                          className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+                        >
+                          {/* Search icon - always represents Shelfmark */}
+                          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -851,6 +1064,12 @@ export default function AuthorDetailPage() {
         authorId={author.id}
         authorName={author.name}
         currentHardcoverId={author.hardcover_id}
+      />
+      <MetadataInfoDialog
+        bookId={urlBookModal?.id ?? null}
+        title={urlBookModal?.title ?? ""}
+        open={urlBookModal !== null}
+        onClose={() => setUrlBookModal(null)}
       />
     </div>
   );

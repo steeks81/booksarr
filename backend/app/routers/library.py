@@ -31,13 +31,19 @@ async def get_scan_status():
 
 @router.get("/unmatched-files", response_model=list[UnmatchedLocalFile])
 async def get_all_unmatched_files(db: AsyncSession = Depends(get_db)):
+    """
+    Return files that are not linked to any visible book globally.
+    """
     authors_result = await db.execute(
         select(Author).options(selectinload(Author.author_directories))
     )
     authors = authors_result.scalars().all()
 
     all_books_result = await db.execute(
-        select(Book).options(selectinload(Book.files))
+        select(Book).options(
+            selectinload(Book.files),
+            selectinload(Book.author),
+        )
     )
     all_books = all_books_result.scalars().all()
 
@@ -67,6 +73,10 @@ async def get_all_unmatched_files(db: AsyncSession = Depends(get_db)):
                 file_format=file_format,
                 linked_book_id=linked_book.id if linked_book else None,
                 linked_book_title=linked_book.title if linked_book else None,
+                linked_book_abs_id=linked_book.abs_book_id if linked_book else None,
+                linked_book_hardcover_id=linked_book.hardcover_id if linked_book else None,
+                linked_author_id=linked_book.author.id if linked_book and linked_book.author else None,
+                linked_author_name=linked_book.author.name if linked_book and linked_book.author else None,
                 author_id=author.id,
                 author_name=author.name,
             ))

@@ -989,11 +989,40 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
         for book in books
         for book_file in book.files
     }
-    local_file_book_map = {
-        book_file.file_path: book
-        for book in all_books
-        for book_file in book.files
-    }
+
+    # Collect local file paths to find any cross-author linked books
+    local_file_paths = [
+        file_path
+        for file_path, _, _, _ in _collect_current_author_local_files(author.author_directories)
+        if file_path not in visible_book_file_paths
+    ]
+
+    # Query ALL books that have files matching our unmatched local files
+    # This catches cross-author linked files (e.g., Dietz books in KJA folder)
+    if local_file_paths:
+        cross_linked_result = await db.execute(
+            select(Book)
+            .options(
+                selectinload(Book.files),
+                selectinload(Book.author),
+            )
+            .join(BookFile)
+            .where(BookFile.file_path.in_(local_file_paths))
+        )
+        cross_linked_books = cross_linked_result.scalars().unique().all()
+    else:
+        cross_linked_books = []
+
+    # Build map from file path to book (including cross-author books)
+    local_file_book_map: dict[str, Book] = {}
+    for book in all_books:
+        for book_file in book.files:
+            local_file_book_map[book_file.file_path] = book
+    for book in cross_linked_books:
+        for book_file in book.files:
+            if book_file.file_path not in local_file_book_map:
+                local_file_book_map[book_file.file_path] = book
+
     unmatched_local_files = [
         UnmatchedLocalFile(
             file_path=file_path,
@@ -1002,6 +1031,10 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
             file_format=file_format,
             linked_book_id=linked_book.id if linked_book else None,
             linked_book_title=linked_book.title if linked_book else None,
+            linked_book_abs_id=linked_book.abs_book_id if linked_book else None,
+            linked_book_hardcover_id=linked_book.hardcover_id if linked_book else None,
+            linked_author_id=linked_book.author.id if linked_book and linked_book.author else None,
+            linked_author_name=linked_book.author.name if linked_book and linked_book.author else None,
         )
         for file_path, file_name, file_size, file_format in _collect_current_author_local_files(author.author_directories)
         if file_path not in visible_book_file_paths

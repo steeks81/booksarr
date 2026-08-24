@@ -20,6 +20,8 @@ export function useUpdateSettings() {
       abs_api_key?: string;
       abs_library_id?: string;
       prefer_abs_metadata?: boolean;
+      open_owned_in_abs?: boolean;
+      shelfmark_url?: string;
       scan_interval_hours?: number;
       log_level?: string;
       visibility_categories?: VisibilityCategories;

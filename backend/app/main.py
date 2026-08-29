@@ -61,7 +61,7 @@ app.add_middleware(
 )
 
 # Register routers
-from backend.app.routers import authors, books, series, library, settings, logs, irc, abs  # noqa: E402
+from backend.app.routers import authors, books, series, library, settings, logs, irc, abs, shelfmark  # noqa: E402
 
 app.include_router(authors.router)
 app.include_router(books.router)
@@ -71,6 +71,7 @@ app.include_router(settings.router)
 app.include_router(logs.router)
 app.include_router(irc.router)
 app.include_router(abs.router)
+app.include_router(shelfmark.router)
 
 
 @app.get("/api/health")

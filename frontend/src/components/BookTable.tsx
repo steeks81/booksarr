@@ -8,6 +8,7 @@ import { useAbsLookupBook } from "../api/abs";
 import { useSettings } from "../api/settings";
 import CoverPickerDialog from "./CoverPickerDialog";
 import IrcSearchDialog from "./IrcSearchDialog";
+import ShelfmarkSearchDialog from "./ShelfmarkSearchDialog";
 import BookDownloadSelector from "./BookDownloadSelector";
 import MetadataInfoDialog from "./MetadataInfoDialog";
 import { compareTitles } from "../utils/titleSort";
@@ -223,6 +224,7 @@ export default function BookTable({
   const [absSearchPending, setAbsSearchPending] = useState<number | null>(null);
   const [coverPickerBook, setCoverPickerBook] = useState<{ id: number; title: string } | null>(null);
   const [ircSearchBook, setIrcSearchBook] = useState<{ id: number; title: string; authorName: string | null } | null>(null);
+  const [shelfmarkSearchBook, setShelfmarkSearchBook] = useState<{ id: number; title: string; authorName: string | null; series: string | null } | null>(null);
   const [metadataInfoBook, setMetadataInfoBook] = useState<{ id: number; title: string } | null>(null);
   const [actionMenuBookId, setActionMenuBookId] = useState<number | null>(null);
   const [actionMenuPosition, setActionMenuPosition] = useState<{ left: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
@@ -605,6 +607,14 @@ export default function BookTable({
         open={ircSearchBook !== null}
         onClose={() => setIrcSearchBook(null)}
       />
+      <ShelfmarkSearchDialog
+        bookId={shelfmarkSearchBook?.id ?? null}
+        title={shelfmarkSearchBook?.title ?? ""}
+        authorName={shelfmarkSearchBook?.authorName ?? null}
+        series={shelfmarkSearchBook?.series}
+        open={shelfmarkSearchBook !== null}
+        onClose={() => setShelfmarkSearchBook(null)}
+      />
       <MetadataInfoDialog
         bookId={metadataInfoBook?.id ?? null}
         title={metadataInfoBook?.title ?? ""}
@@ -786,18 +796,18 @@ export default function BookTable({
               >
                 Search IRC
               </button>
-              {settings?.shelfmark_url && menuBook.title && (
+              {settings?.shelfmark_enabled && (
                 <button
                   type="button"
                   onClick={() => {
                     setActionMenuBookId(null);
                     setActionMenuPosition(null);
-                    const baseUrl = settings.shelfmark_url.replace(/\/$/, "");
-                    const params = new URLSearchParams({ q: menuBook.title });
-                    const author = menuAuthorName ?? contextAuthorName;
-                    if (author) params.set("author", author);
-                    params.set("content_type", "ebook");
-                    window.open(`${baseUrl}/?${params.toString()}`, "_blank", "noopener,noreferrer");
+                    setShelfmarkSearchBook({
+                      id: menuBook.id,
+                      title: menuBook.title,
+                      authorName: menuAuthorName ?? contextAuthorName ?? null,
+                      series: menuBook.series_info?.[0]?.series_name ?? null,
+                    });
                   }}
                   className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
                 >

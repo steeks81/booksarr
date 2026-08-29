@@ -190,6 +190,7 @@ class SeriesInAuthor(BaseModel):
     id: int
     name: str
     hardcover_id: int | None
+    primary_author_name: str | None
     books: list["SeriesBookEntry"]
 
 

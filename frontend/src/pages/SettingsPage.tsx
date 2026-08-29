@@ -117,7 +117,7 @@ const SECTION_META: Record<SettingsSection, { title: string; description: string
   },
   shelfmark: {
     title: "Shelfmark",
-    description: "Connect to Shelfmark to search and download books from Anna's Archive.",
+    description: "Connect to Shelfmark to search for books.",
   },
 };
 
@@ -157,7 +157,17 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
   const [preferAbsMetadata, setPreferAbsMetadata] = useState(false);
   const [openOwnedInAbs, setOpenOwnedInAbs] = useState(false);
   const [shelfmarkUrl, setShelfmarkUrl] = useState("");
+  const [shelfmarkUsername, setShelfmarkUsername] = useState("");
+  const [shelfmarkPassword, setShelfmarkPassword] = useState("");
+  const [showShelfmarkPassword, setShowShelfmarkPassword] = useState(false);
+  const [shelfmarkEnabled, setShelfmarkEnabled] = useState(false);
   const [shelfmarkSaved, setShelfmarkSaved] = useState(false);
+  const [shelfmarkTestResult, setShelfmarkTestResult] = useState<{
+    connected: boolean;
+    url: string | null;
+    error: string | null;
+  } | null>(null);
+  const [shelfmarkTestLoading, setShelfmarkTestLoading] = useState(false);
   const [absTestResult, setAbsTestResult] = useState<{
     success: boolean;
     message: string;
@@ -170,6 +180,14 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
 
   const syncAuthorImages = useAbsSyncAuthorImages();
   const { data: absSyncStatus } = useAbsSyncStatus(absSyncing);
+
+  // Stop polling when sync completes or fails
+  useEffect(() => {
+    if (absSyncing && absSyncStatus && (absSyncStatus.status === "completed" || absSyncStatus.status === "failed")) {
+      // Keep showing final status for a moment before stopping
+      setTimeout(() => setAbsSyncing(false), 2000);
+    }
+  }, [absSyncing, absSyncStatus]);
 
   const { data: scanStatus } = useScanStatus(true);
   const isScanning = scanStatus?.status === "scanning";
@@ -194,6 +212,7 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
       setAbsLibraryId(settings.abs_library_id ?? "");
       setPreferAbsMetadata(settings.prefer_abs_metadata ?? false);
       setOpenOwnedInAbs(settings.open_owned_in_abs ?? false);
+      setShelfmarkEnabled(settings.shelfmark_enabled ?? false);
     }
   }, [settings]);
 
@@ -920,7 +939,7 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
                   <h4 className="font-medium text-slate-200">Shelfmark</h4>
                 </div>
                 <p className="text-sm text-slate-400">
-                  Search and download books from Anna's Archive.
+                  Search and download books.
                 </p>
               </a>
             </div>
@@ -1148,15 +1167,17 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
               setAbsSyncing(true);
               try {
                 await syncAuthorImages.mutateAsync();
-              } finally {
-                // Keep polling for a bit to show final status
+                // POST returns immediately, useEffect polling will track progress
+                // and stop when status becomes "completed" or "failed"
+              } catch {
+                // On error starting sync, stop polling after a short delay
                 setTimeout(() => setAbsSyncing(false), 2000);
               }
             }}
-            disabled={!settings?.abs_enabled || !settings?.abs_url || !settings?.abs_api_key || !settings?.abs_library_id || syncAuthorImages.isPending}
+            disabled={!settings?.abs_enabled || !settings?.abs_url || !settings?.abs_api_key || !settings?.abs_library_id || syncAuthorImages.isPending || absSyncing}
             className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:text-slate-500"
           >
-            {syncAuthorImages.isPending ? "Syncing..." : "Sync from Audiobookshelf"}
+            {absSyncing ? "Syncing..." : "Sync from Audiobookshelf"}
           </button>
           {absSyncStatus?.status === "completed" && (
             <span className="text-sm text-emerald-400">
@@ -1181,13 +1202,23 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
               <div>
                 <h3 className="text-lg font-semibold mb-2">Connection</h3>
                 <p className="text-sm text-slate-400">
-                  Connect to your Shelfmark instance to enable "Search Shelfmark" links on missing books.
+                  Connect to your Shelfmark instance to search for books from within Booksarr.
                 </p>
               </div>
               <div className="text-right">
-                {settings?.shelfmark_url ? (
+                {settings?.shelfmark_enabled && settings?.shelfmark_url && settings?.shelfmark_password_set ? (
                   <>
-                    <div className="text-sm font-medium text-emerald-400">configured</div>
+                    <div className="text-sm font-medium text-emerald-400">enabled</div>
+                    <div className="text-xs text-slate-500 mt-1">{settings.shelfmark_url}</div>
+                  </>
+                ) : settings?.shelfmark_url && settings?.shelfmark_password_set ? (
+                  <>
+                    <div className="text-sm font-medium text-amber-400">configured (disabled)</div>
+                    <div className="text-xs text-slate-500 mt-1">{settings.shelfmark_url}</div>
+                  </>
+                ) : settings?.shelfmark_url ? (
+                  <>
+                    <div className="text-sm font-medium text-amber-400">needs credentials</div>
                     <div className="text-xs text-slate-500 mt-1">{settings.shelfmark_url}</div>
                   </>
                 ) : (
@@ -1200,54 +1231,202 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
             </div>
 
             <div className="mt-6">
-              <div className="text-xs text-slate-400 mb-1">Shelfmark URL</div>
-              {settings?.shelfmark_url && (
-                <div className="text-xs text-slate-500 mb-1">
-                  Current: {settings.shelfmark_url}
-                  {settings.shelfmark_url_source === "environment" && (
-                    <span className="ml-1 text-blue-400">(ENV)</span>
-                  )}
-                </div>
-              )}
-              <input
-                value={shelfmarkUrl}
-                onChange={(e) => setShelfmarkUrl(e.target.value)}
-                placeholder={settings?.shelfmark_url || "https://shelfmark.example.com"}
-                className="w-full max-w-md rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-slate-200"
-              />
+              <label className="flex items-center gap-3 text-sm font-medium text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={shelfmarkEnabled}
+                  onChange={(e) => setShelfmarkEnabled(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-500 bg-slate-700 text-emerald-500 focus:ring-emerald-500"
+                />
+                Enable Shelfmark Integration
+              </label>
+              <p className="text-xs text-slate-500 mt-2 ml-7">
+                When enabled, "Search Shelfmark" appears in book menus.
+              </p>
             </div>
 
-            <div className="mt-6 flex items-center gap-4">
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <div className="text-xs text-slate-400 mb-1">Shelfmark URL</div>
+                {settings?.shelfmark_url && (
+                  <div className="text-xs text-slate-500 mb-1">
+                    Current: {settings.shelfmark_url}
+                    {settings.shelfmark_url_source === "environment" && (
+                      <span className="ml-1 text-blue-400">(ENV)</span>
+                    )}
+                  </div>
+                )}
+                <input
+                  value={shelfmarkUrl}
+                  onChange={(e) => setShelfmarkUrl(e.target.value)}
+                  placeholder={settings?.shelfmark_url || "https://shelfmark.example.com"}
+                  className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-slate-200"
+                />
+              </div>
+
+              <div>
+                <div className="text-xs text-slate-400 mb-1">Username</div>
+                {settings?.shelfmark_username && (
+                  <div className="text-xs text-slate-500 mb-1">
+                    Current: {settings.shelfmark_username}
+                    {settings.shelfmark_username_source === "environment" && (
+                      <span className="ml-1 text-blue-400">(ENV)</span>
+                    )}
+                  </div>
+                )}
+                <input
+                  value={shelfmarkUsername}
+                  onChange={(e) => setShelfmarkUsername(e.target.value)}
+                  placeholder={settings?.shelfmark_username || "username"}
+                  className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-slate-200"
+                />
+              </div>
+
+              <div>
+                <div className="text-xs text-slate-400 mb-1">Password</div>
+                {settings?.shelfmark_password_set && (
+                  <div className="text-xs text-slate-500 mb-1">
+                    Current: ••••••••
+                    {settings.shelfmark_password_source === "environment" && (
+                      <span className="ml-1 text-blue-400">(ENV)</span>
+                    )}
+                  </div>
+                )}
+                <div className="relative">
+                  <input
+                    type={showShelfmarkPassword ? "text" : "password"}
+                    value={shelfmarkPassword}
+                    onChange={(e) => setShelfmarkPassword(e.target.value)}
+                    placeholder="Enter password"
+                    className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 pr-10 text-sm text-slate-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowShelfmarkPassword(!showShelfmarkPassword)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      {showShelfmarkPassword ? (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21" />
+                      ) : (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      )}
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {shelfmarkTestResult && (
+              <div className={`mt-4 rounded-lg border p-3 ${
+                shelfmarkTestResult.connected
+                  ? "border-emerald-500/30 bg-emerald-500/10"
+                  : "border-red-500/30 bg-red-500/10"
+              }`}>
+                <div className={`text-sm font-medium ${
+                  shelfmarkTestResult.connected ? "text-emerald-400" : "text-red-400"
+                }`}>
+                  {shelfmarkTestResult.connected ? "Connection successful" : "Connection failed"}
+                </div>
+                {shelfmarkTestResult.error && (
+                  <div className="text-xs text-red-300 mt-1">{shelfmarkTestResult.error}</div>
+                )}
+              </div>
+            )}
+
+            <div className="mt-6 flex flex-wrap items-center gap-3">
               <button
                 onClick={async () => {
-                  if (!shelfmarkUrl.trim()) return;
-                  await updateSettings.mutateAsync({ shelfmark_url: shelfmarkUrl.trim() });
-                  setShelfmarkSaved(true);
-                  setShelfmarkUrl("");
-                  setTimeout(() => setShelfmarkSaved(false), 3000);
-                }}
-                disabled={!shelfmarkUrl.trim() || updateSettings.isPending}
-                className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {updateSettings.isPending ? "Saving..." : "Save"}
-              </button>
-              {shelfmarkSaved && (
-                <span className="text-sm text-emerald-400">Saved!</span>
-              )}
-            </div>
-          </div>
+                  // Determine effective values: form input > saved setting
+                  const effectiveUrl = shelfmarkUrl.trim() || settings?.shelfmark_url || "";
+                  const effectiveUsername = shelfmarkUsername.trim() || settings?.shelfmark_username || "";
+                  const effectivePassword = shelfmarkPassword || (settings?.shelfmark_password_set ? "__SAVED__" : "");
 
-          <div className="bg-slate-800 rounded-lg border border-slate-700 p-6">
-            <h3 className="text-lg font-semibold mb-2">How It Works</h3>
-            <p className="text-sm text-slate-400 mb-4">
-              When configured, a "Search Shelfmark" button appears on missing books. Clicking it opens
-              Shelfmark with the book title and author pre-filled, letting you search Anna's Archive
-              and download directly.
-            </p>
-            <p className="text-sm text-slate-400">
-              Shelfmark handles Cloudflare challenges automatically, so downloads work even when
-              Anna's Archive has protection enabled.
-            </p>
+                  // Validate all required fields exist
+                  if (!effectiveUrl || !effectiveUsername || !effectivePassword) {
+                    setShelfmarkTestResult({
+                      connected: false,
+                      url: null,
+                      error: "URL, username, and password are all required",
+                    });
+                    return;
+                  }
+
+                  // Test connection first
+                  setShelfmarkTestLoading(true);
+                  setShelfmarkTestResult(null);
+                  try {
+                    const response = await fetch("/api/shelfmark/test", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        url: shelfmarkUrl.trim() || undefined,
+                        username: shelfmarkUsername.trim() || undefined,
+                        password: shelfmarkPassword || undefined,
+                      }),
+                    });
+                    const result = await response.json();
+                    setShelfmarkTestResult(result);
+
+                    if (!result.connected) {
+                      setShelfmarkTestLoading(false);
+                      return; // Don't save if connection failed
+                    }
+
+                    // Connection succeeded, save settings
+                    const updates: { shelfmark_enabled?: boolean; shelfmark_url?: string; shelfmark_username?: string; shelfmark_password?: string } = {
+                      shelfmark_enabled: shelfmarkEnabled,
+                    };
+                    if (shelfmarkUrl.trim()) updates.shelfmark_url = shelfmarkUrl.trim();
+                    if (shelfmarkUsername.trim()) updates.shelfmark_username = shelfmarkUsername.trim();
+                    if (shelfmarkPassword) updates.shelfmark_password = shelfmarkPassword;
+                    
+                    await updateSettings.mutateAsync(updates);
+                    setShelfmarkSaved(true);
+                    setShelfmarkUrl("");
+                    setShelfmarkUsername("");
+                    setShelfmarkPassword("");
+                    setTimeout(() => setShelfmarkSaved(false), 3000);
+                  } catch {
+                    setShelfmarkTestResult({ connected: false, url: null, error: "Connection test failed" });
+                  } finally {
+                    setShelfmarkTestLoading(false);
+                  }
+                }}
+                disabled={shelfmarkTestLoading || updateSettings.isPending}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {shelfmarkTestLoading ? "Testing..." : updateSettings.isPending ? "Saving..." : "Save"}
+              </button>
+              <button
+                onClick={async () => {
+                  setShelfmarkTestLoading(true);
+                  setShelfmarkTestResult(null);
+                  try {
+                    const response = await fetch("/api/shelfmark/test", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        url: shelfmarkUrl.trim() || undefined,
+                        username: shelfmarkUsername.trim() || undefined,
+                        password: shelfmarkPassword || undefined,
+                      }),
+                    });
+                    const result = await response.json();
+                    setShelfmarkTestResult(result);
+                  } catch {
+                    setShelfmarkTestResult({ connected: false, url: null, error: "Connection test failed" });
+                  } finally {
+                    setShelfmarkTestLoading(false);
+                  }
+                }}
+                disabled={shelfmarkTestLoading || (!settings?.shelfmark_url && !shelfmarkUrl.trim())}
+                className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {shelfmarkTestLoading ? "Testing..." : "Test Connection"}
+              </button>
+              {shelfmarkSaved && <span className="text-sm text-emerald-400">Settings saved!</span>}
+            </div>
           </div>
         </>
       )}

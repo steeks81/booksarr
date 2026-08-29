@@ -67,10 +67,21 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     open_owned_in_abs = settings.get("open_owned_in_abs", "false").lower() == "true"
 
     # Shelfmark integration
+    shelfmark_enabled = settings.get("shelfmark_enabled", "false").lower() == "true"
     db_shelfmark_url = settings.get("shelfmark_url", "")
     shelfmark_url_from_env = bool(os.environ.get("SHELFMARK_URL", ""))
     shelfmark_url = db_shelfmark_url or os.environ.get("SHELFMARK_URL", "")
     shelfmark_url_source = "database" if db_shelfmark_url else ("environment" if shelfmark_url_from_env else "none")
+
+    db_shelfmark_username = settings.get("shelfmark_username", "")
+    shelfmark_username_from_env = bool(os.environ.get("SHELFMARK_USERNAME", ""))
+    shelfmark_username = db_shelfmark_username or os.environ.get("SHELFMARK_USERNAME", "")
+    shelfmark_username_source = "database" if db_shelfmark_username else ("environment" if shelfmark_username_from_env else "none")
+
+    db_shelfmark_password = settings.get("shelfmark_password", "")
+    shelfmark_password_from_env = bool(os.environ.get("SHELFMARK_PASSWORD", ""))
+    shelfmark_password_set = bool(db_shelfmark_password or os.environ.get("SHELFMARK_PASSWORD", ""))
+    shelfmark_password_source = "database" if db_shelfmark_password else ("environment" if shelfmark_password_from_env else "none")
 
     last_scan = settings.get("last_scan_at")
     last_scan_summary = None
@@ -109,9 +120,14 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         abs_library_id_source=abs_library_id_source,
         prefer_abs_metadata=prefer_abs_metadata,
         open_owned_in_abs=open_owned_in_abs,
+        shelfmark_enabled=shelfmark_enabled,
         shelfmark_url=shelfmark_url,
         shelfmark_url_from_env=shelfmark_url_from_env,
         shelfmark_url_source=shelfmark_url_source,
+        shelfmark_username=shelfmark_username,
+        shelfmark_username_source=shelfmark_username_source,
+        shelfmark_password_set=shelfmark_password_set,
+        shelfmark_password_source=shelfmark_password_source,
         library_path=str(BOOKS_DIR),
         last_scan_at=last_scan,
         last_scan_summary=last_scan_summary,
@@ -147,8 +163,24 @@ async def update_settings(body: SettingsUpdate, db: AsyncSession = Depends(get_d
     if body.open_owned_in_abs is not None:
         await _upsert_setting(db, "open_owned_in_abs", "true" if body.open_owned_in_abs else "false")
 
+    if body.shelfmark_enabled is not None:
+        await _upsert_setting(db, "shelfmark_enabled", "true" if body.shelfmark_enabled else "false")
+
     if body.shelfmark_url is not None:
         await _upsert_setting(db, "shelfmark_url", body.shelfmark_url)
+        # Clear cached URL and session when URL changes
+        from backend.app.services.shelfmark import clear_session_cache, clear_url_cache
+        clear_url_cache()
+        clear_session_cache()
+
+    if body.shelfmark_username is not None:
+        await _upsert_setting(db, "shelfmark_username", body.shelfmark_username)
+
+    if body.shelfmark_password is not None:
+        await _upsert_setting(db, "shelfmark_password", body.shelfmark_password)
+        # Clear cached session when password changes
+        from backend.app.services.shelfmark import clear_session_cache
+        clear_session_cache()
 
     if body.scan_interval_hours is not None:
         await _upsert_setting(db, "scan_interval_hours", str(body.scan_interval_hours))

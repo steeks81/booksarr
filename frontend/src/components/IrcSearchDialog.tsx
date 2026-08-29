@@ -91,7 +91,7 @@ export default function IrcSearchDialog({
     setJobId(job.id);
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-6">
       <div className="max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
         <div className="flex items-start justify-between border-b border-slate-700 px-6 py-4">
@@ -294,7 +294,8 @@ export default function IrcSearchDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

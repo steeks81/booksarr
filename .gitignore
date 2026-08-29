@@ -18,6 +18,7 @@ config/
 # IDE
 .vscode/
 .idea/
+.kiro/
 
 # OS
 .DS_Store
@@ -27,5 +28,15 @@ Thumbs.db
 .env
 .smbdelete*
 
-# AI Context (local only)
-AI_CONTEXT.md
+# Local context files
+AI_CONTEXT.md*
+#AI_CONTEXT.md.bak*
+BOOTSTRAP.md*
+ISSUES.md*
+#ISSUES.md.bak*
+
+# Local sync scripts
+sync-to-smb.sh
+sync-from-smb.sh
+sync-to-ssh.sh
+sync-from-ssh.sh

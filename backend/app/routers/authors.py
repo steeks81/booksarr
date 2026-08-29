@@ -974,6 +974,7 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
             )
         )
         .options(
+            selectinload(Book.author),
             selectinload(Book.files),
             selectinload(Book.book_series).selectinload(BookSeries.series),
         )
@@ -1054,10 +1055,13 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
                 position=bs.position,
             ))
             if s.id not in series_map:
+                # Use the primary author from the first book in this series
+                primary_author = book.author.name if book.author else None
                 series_map[s.id] = {
                     "id": s.id,
                     "name": s.name,
                     "hardcover_id": s.hardcover_id,
+                    "primary_author_name": primary_author,
                     "books": [],
                 }
             series_map[s.id]["books"].append(SeriesBookEntry(

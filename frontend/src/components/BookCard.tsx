@@ -5,6 +5,7 @@ import type { BookInAuthor, Book } from "../types";
 import { getBookCoverPresentation, getImageUrl } from "../types";
 import CoverPickerDialog from "./CoverPickerDialog";
 import IrcSearchDialog from "./IrcSearchDialog";
+import ShelfmarkSearchDialog from "./ShelfmarkSearchDialog";
 import { useRefreshBook, useSetBookVisibility } from "../api/books";
 import { useAbsLookupBook, useAbsSearchBook } from "../api/abs";
 import { useSettings } from "../api/settings";
@@ -73,6 +74,7 @@ export default function BookCard({
   const { data: settings } = useSettings();
   const [coverPickerOpen, setCoverPickerOpen] = useState(false);
   const [ircSearchOpen, setIrcSearchOpen] = useState(false);
+  const [shelfmarkSearchOpen, setShelfmarkSearchOpen] = useState(false);
   const [metadataInfoOpen, setMetadataInfoOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
@@ -423,16 +425,12 @@ export default function BookCard({
                 >
                   Search IRC
                 </button>
-                {settings?.shelfmark_url && book.title && (
+                {settings?.shelfmark_enabled && (
                   <button
                     type="button"
                     onClick={() => {
                       closeMenu();
-                      const baseUrl = settings.shelfmark_url.replace(/\/$/, "");
-                      const params = new URLSearchParams({ q: book.title });
-                      if (authorName) params.set("author", authorName);
-                      params.set("content_type", "ebook");
-                      window.open(`${baseUrl}/?${params.toString()}`, "_blank", "noopener,noreferrer");
+                      setShelfmarkSearchOpen(true);
                     }}
                     className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
                   >
@@ -489,6 +487,14 @@ export default function BookCard({
         authorName={isFullBook(book) ? book.author_name : authorName}
         open={ircSearchOpen}
         onClose={() => setIrcSearchOpen(false)}
+      />
+      <ShelfmarkSearchDialog
+        bookId={book.id}
+        title={book.title}
+        authorName={isFullBook(book) ? book.author_name : authorName}
+        series={book.series_info?.[0]?.series_name}
+        open={shelfmarkSearchOpen}
+        onClose={() => setShelfmarkSearchOpen(false)}
       />
       <MetadataInfoDialog
         bookId={book.id}

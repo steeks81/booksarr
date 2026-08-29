@@ -174,6 +174,7 @@ export interface SeriesInAuthor {
   id: number;
   name: string;
   hardcover_id: number | null;
+  primary_author_name: string | null;
   books: SeriesBookEntry[];
 }
 
@@ -416,9 +417,14 @@ export interface Settings {
   abs_library_id_source: "database" | "environment" | "none";
   prefer_abs_metadata: boolean;
   open_owned_in_abs: boolean;
+  shelfmark_enabled: boolean;
   shelfmark_url: string;
   shelfmark_url_from_env: boolean;
   shelfmark_url_source: "database" | "environment" | "none";
+  shelfmark_username: string;
+  shelfmark_username_source: "database" | "environment" | "none";
+  shelfmark_password_set: boolean;
+  shelfmark_password_source: "database" | "environment" | "none";
   library_path: string;
   last_scan_at: string | null;
   last_scan_summary: ScanSummary | null;

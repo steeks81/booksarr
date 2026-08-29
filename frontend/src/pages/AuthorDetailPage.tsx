@@ -15,6 +15,7 @@ import { BookFilterDropdown, bookMatchesFilter, type BookFilterKey } from "../co
 import AuthorPortraitPickerDialog from "../components/AuthorPortraitPickerDialog";
 import FixAuthorMatchDialog from "../components/FixAuthorMatchDialog";
 import MetadataInfoDialog from "../components/MetadataInfoDialog";
+import ShelfmarkSearchDialog from "../components/ShelfmarkSearchDialog";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { compareTitles } from "../utils/titleSort";
 
@@ -85,6 +86,8 @@ export default function AuthorDetailPage() {
   const [selectedBookIds, setSelectedBookIds] = useState<Set<number>>(new Set());
   const [linkedFilePopoverPath, setLinkedFilePopoverPath] = useState<string | null>(null);
   const [urlBookModal, setUrlBookModal] = useState<{ id: number; title: string } | null>(null);
+  const [shelfmarkSearchQuery, setShelfmarkSearchQuery] = useState<{ title: string; authorName: string | null; series?: string; authorSearch?: string } | null>(null);
+  const [cacheProgress, setCacheProgress] = useState<{ current: number; total: number } | null>(null);
   const portraitMenuRef = useRef<HTMLDivElement | null>(null);
   const refreshMenuRef = useRef<HTMLDivElement | null>(null);
   const linkedFilePopoverRef = useRef<HTMLDivElement | null>(null);
@@ -184,6 +187,35 @@ export default function AuthorDetailPage() {
       setSearchParams(searchParams, { replace: true });
     }
   }, [author?.books, searchParams, setSearchParams]);
+
+  // Populate series cache from DB data when author page loads
+  // This is instant (no Shelfmark calls) - we already have series info from Hardcover
+  useEffect(() => {
+    if (!author?.books?.length) return;
+    
+    // Get books with Hardcover IDs and series info
+    const booksWithSeriesInfo = author.books
+      .filter((b) => b.hardcover_id && b.series_info?.length)
+      .map((b) => ({ hardcover_id: b.hardcover_id, series_info: b.series_info }));
+    
+    if (booksWithSeriesInfo.length === 0) return;
+    
+    // Populate cache from DB data (no external calls needed)
+    fetch("/api/shelfmark/series/cache-populate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ books: booksWithSeriesInfo }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        setCacheProgress({ current: data.count, total: booksWithSeriesInfo.length });
+        // Clear after 2 seconds
+        setTimeout(() => setCacheProgress(null), 2000);
+      })
+      .catch(() => {
+        // Silent fail - cache populate is optional optimization
+      });
+  }, [author?.books]);
 
   const imgUrl = author ? getImageUrl(author.image_cached_path, author.image_url) : "";
 
@@ -338,6 +370,16 @@ export default function AuthorDetailPage() {
                     <span className="text-sm text-slate-400">
                       <span className="text-emerald-400">{ownedCount}</span> / {s.books.length} books
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => setShelfmarkSearchQuery({ title: "", authorName: s.primary_author_name, series: s.name })}
+                      className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
+                      title="Search series in Shelfmark"
+                    >
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </button>
                   </div>
                   <BookTable
                     books={seriesFullBooks}
@@ -382,7 +424,7 @@ export default function AuthorDetailPage() {
       return (
         <>
           {filteredSeries.map((s) => (
-            <SeriesGroup key={s.id} series={s} allBooks={sortedBooks} />
+            <SeriesGroup key={s.id} series={s} allBooks={sortedBooks} authorName={author.name} />
           ))}
           {standaloneBooks.length > 0 && (
             <div className="mb-8">
@@ -608,6 +650,29 @@ export default function AuthorDetailPage() {
                         Search Hardcover
                       </button>
                     )}
+                    {settings?.shelfmark_enabled && author?.name && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRefreshMenuOpen(false);
+                          // Pre-populate series cache from DB before author search
+                          const booksWithSeriesInfo = author.books
+                            .filter((b) => b.hardcover_id && b.series_info?.length)
+                            .map((b) => ({ hardcover_id: b.hardcover_id, series_info: b.series_info }));
+                          if (booksWithSeriesInfo.length > 0) {
+                            fetch("/api/shelfmark/series/cache-populate", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ books: booksWithSeriesInfo }),
+                            }).catch(() => {});
+                          }
+                          setShelfmarkSearchQuery({ title: "", authorName: null, authorSearch: author.name });
+                        }}
+                        className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                      >
+                        Search Shelfmark
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -632,7 +697,7 @@ export default function AuthorDetailPage() {
               </div>
             )}
           </div>
-          <div className="flex gap-4 text-sm text-slate-400 mb-4">
+          <div className="flex flex-wrap gap-4 text-sm text-slate-400 mb-4">
             <span><span className="text-emerald-400 font-semibold">{author.book_count_local}</span> owned</span>
             <span><span className="text-slate-200 font-semibold">{author.book_count_total}</span> total books</span>
             <span><span className="text-slate-200 font-semibold">{author.series.length}</span> series</span>
@@ -643,6 +708,12 @@ export default function AuthorDetailPage() {
               >
                 <span className="font-semibold">{author.book_count_hidden}</span> hidden
               </Link>
+            )}
+            {cacheProgress && (
+              <span className="flex items-center gap-1.5 text-emerald-400">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+                Cached {cacheProgress.current}/{cacheProgress.total}
+              </span>
             )}
           </div>
           {author.author_directories.length > 0 && (
@@ -877,17 +948,16 @@ export default function AuthorDetailPage() {
                                   </svg>
                                 </button>
                               )}
-                              {settings?.shelfmark_url && file.linked_book_title && (
+                              {settings?.shelfmark_enabled && file.linked_book_title && (
                                 <button
                                   type="button"
                                   title="Search Shelfmark"
                                   onClick={() => {
                                     setLinkedFilePopoverPath(null);
-                                    const baseUrl = settings.shelfmark_url!.replace(/\/$/, "");
-                                    const params = new URLSearchParams({ q: file.linked_book_title! });
-                                    if (file.linked_author_name) params.set("author", file.linked_author_name);
-                                    params.set("content_type", "ebook");
-                                    window.open(`${baseUrl}/?${params.toString()}`, "_blank", "noopener,noreferrer");
+                                    setShelfmarkSearchQuery({
+                                      title: file.linked_book_title!,
+                                      authorName: file.linked_author_name ?? null,
+                                    });
                                   }}
                                   className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
                                 >
@@ -938,16 +1008,15 @@ export default function AuthorDetailPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                         </svg>
                       </button>
-                      {settings?.shelfmark_url && (
+                      {settings?.shelfmark_enabled && (
                         <button
                           type="button"
                           title="Search Shelfmark"
                           onClick={() => {
-                            const baseUrl = settings.shelfmark_url!.replace(/\/$/, "");
-                            const params = new URLSearchParams({ q: searchTitle });
-                            if (author?.name) params.set("author", author.name);
-                            params.set("content_type", "ebook");
-                            window.open(`${baseUrl}/?${params.toString()}`, "_blank", "noopener,noreferrer");
+                            setShelfmarkSearchQuery({
+                              title: searchTitle,
+                              authorName: author?.name ?? null,
+                            });
                           }}
                           className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
                         >
@@ -1070,6 +1139,15 @@ export default function AuthorDetailPage() {
         title={urlBookModal?.title ?? ""}
         open={urlBookModal !== null}
         onClose={() => setUrlBookModal(null)}
+      />
+      <ShelfmarkSearchDialog
+        bookId={null}
+        title={shelfmarkSearchQuery?.title ?? ""}
+        authorName={shelfmarkSearchQuery?.authorName ?? null}
+        series={shelfmarkSearchQuery?.series}
+        authorSearch={shelfmarkSearchQuery?.authorSearch}
+        open={shelfmarkSearchQuery !== null}
+        onClose={() => setShelfmarkSearchQuery(null)}
       />
     </div>
   );

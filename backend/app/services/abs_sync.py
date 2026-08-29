@@ -11,51 +11,54 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.config import ABS_URL, ABS_API_KEY, ABS_LIBRARY_ID, CONFIG_DIR
 from backend.app.models import Author, Book, Setting
 from backend.app.services.image_cache import cache_author_image, cache_book_cover
+from backend.app.utils.api_usage import begin_api_usage_batch, clear_api_usage_batch, flush_api_usage_batch
 
 logger = logging.getLogger("booksarr.abs_sync")
 
-# Internal Docker hostnames to try for faster API calls
-_INTERNAL_ABS_URLS = [
-    "http://audiobookshelf:80",
-    "http://audiobookshelf:13378",
-]
+# Internal Docker hostname for faster API calls (internal port is 80)
+_INTERNAL_ABS_URL = "http://audiobookshelf:80"
 
-# Cached working internal URL (None = not tested, "" = no internal works)
-_cached_internal_url: str | None = None
+# Cached working URL (None = not tested yet)
+_cached_abs_url: str | None = None
 
 
-async def get_best_abs_url(configured_url: str, api_key: str) -> str:
-    """Try internal Docker URLs first, fall back to configured URL.
+async def get_internal_url(configured_url: str, api_key: str) -> str:
+    """Get the internal URL for backend API calls.
     
-    This allows users to configure the external URL for browser links
-    while the backend uses faster internal Docker networking when available.
+    Tries internal Docker URL first, falls back to configured URL.
+    Result is cached for app lifetime (only tests once).
     """
-    global _cached_internal_url
+    global _cached_abs_url
     
     # Return cached result if we've already tested
-    if _cached_internal_url is not None:
-        if _cached_internal_url:
-            return _cached_internal_url
-        return configured_url
+    if _cached_abs_url is not None:
+        return _cached_abs_url
     
     headers = {"Authorization": f"Bearer {api_key}"}
     
-    # Try internal URLs first
-    for internal_url in _INTERNAL_ABS_URLS:
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                resp = await client.get(f"{internal_url}/ping", headers=headers)
-                if resp.status_code == 200:
-                    logger.info("Using internal ABS URL: %s", internal_url)
-                    _cached_internal_url = internal_url
-                    return internal_url
-        except Exception:
-            continue
+    # Try internal Docker URL first
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"{_INTERNAL_ABS_URL}/ping", headers=headers)
+            if resp.status_code == 200:
+                logger.info("Using internal ABS URL: %s", _INTERNAL_ABS_URL)
+                _cached_abs_url = _INTERNAL_ABS_URL
+                return _cached_abs_url
+    except Exception:
+        pass
     
-    # No internal URL works, use configured
+    # Internal doesn't work, use configured
     logger.info("Using configured ABS URL: %s", configured_url)
-    _cached_internal_url = ""  # Mark as tested, no internal works
-    return configured_url
+    _cached_abs_url = configured_url
+    return _cached_abs_url
+
+
+def get_external_url(configured_url: str) -> str:
+    """Get the external URL for browser-accessible links.
+    
+    Returns the configured URL (what the user set in settings).
+    """
+    return configured_url.rstrip("/")
 
 
 @dataclass
@@ -123,8 +126,8 @@ async def get_abs_settings(db: AsyncSession) -> tuple[str, str, str, bool, bool]
 
 async def fetch_abs_authors(url: str, api_key: str, library_id: str) -> list[AbsAuthor]:
     """Fetch all authors from ABS library."""
-    # Try internal URL first for speed
-    url = await get_best_abs_url(url, api_key)
+    # Use internal URL for speed
+    url = await get_internal_url(url, api_key)
     url = url.rstrip("/")
     headers = {"Authorization": f"Bearer {api_key}"}
     
@@ -152,7 +155,7 @@ async def fetch_abs_authors(url: str, api_key: str, library_id: str) -> list[Abs
 
 async def fetch_abs_books(url: str, api_key: str, library_id: str) -> list[AbsBook]:
     """Fetch all audiobooks from ABS library."""
-    url = await get_best_abs_url(url, api_key)
+    url = await get_internal_url(url, api_key)
     url = url.rstrip("/")
     headers = {"Authorization": f"Bearer {api_key}"}
     
@@ -243,7 +246,7 @@ async def sync_author_from_abs(
     if matching_abs_author.image_path:
         if not author.image_cached_path or prefer_abs:
             # Use internal URL for image download (faster)
-            internal_url = await get_best_abs_url(abs_url, abs_api_key)
+            internal_url = await get_internal_url(abs_url, abs_api_key)
             internal_url = internal_url.rstrip("/")
             image_url = f"{internal_url}/api/authors/{matching_abs_author.id}/image"
             
@@ -278,11 +281,13 @@ async def sync_book_from_abs(
     abs_books: list[AbsBook],
     prefer_abs: bool = False,
     hc_client=None,
+    existing_hc_ids: set[int] | None = None,
 ) -> bool:
     """Sync book data from ABS (ID, cover, and HC ID if missing).
     
     Matches by file path from book.files.
     If hc_client is provided and book lacks hardcover_id, will search Hardcover.
+    existing_hc_ids is a set of HC IDs already assigned to avoid UNIQUE conflicts.
     Returns True if any data was updated.
     """
     if not book.files:
@@ -359,15 +364,22 @@ async def sync_book_from_abs(
                     book.contributors = json.dumps(contributors)
                     updated = True
                 
-                # Note: HC ID assignment happens here but may fail on commit
-                # if another book already has this HC ID (co-author/duplicate scenario)
-                # The unique constraint will catch it, but we log it as success here
-                book.hardcover_id = hc_id
-                logger.info(
-                    "Found Hardcover ID %d for book: %s (contributors: %s)",
-                    hc_id, book.title, contributors
-                )
-                updated = True
+                # Check if this HC ID is already used by another book
+                # to avoid UNIQUE constraint violations
+                if existing_hc_ids is not None and hc_id in existing_hc_ids:
+                    logger.debug(
+                        "HC ID %d already assigned to another book, skipping for: %s",
+                        hc_id, book.title
+                    )
+                else:
+                    book.hardcover_id = hc_id
+                    if existing_hc_ids is not None:
+                        existing_hc_ids.add(hc_id)
+                    logger.info(
+                        "Found Hardcover ID %d for book: %s (contributors: %s)",
+                        hc_id, book.title, contributors
+                    )
+                    updated = True
         except Exception as e:
             logger.debug("HC lookup failed for %s: %s", book.title, e)
     
@@ -375,7 +387,7 @@ async def sync_book_from_abs(
     if matching_abs_book.has_cover:
         if not book.cover_image_cached_path or prefer_abs:
             # Use internal URL for cover download (faster)
-            internal_url = await get_best_abs_url(abs_url, abs_api_key)
+            internal_url = await get_internal_url(abs_url, abs_api_key)
             internal_url = internal_url.rstrip("/")
             cover_url = f"{internal_url}/api/items/{matching_abs_book.id}/cover"
             
@@ -408,6 +420,25 @@ async def sync_all_from_abs(db: AsyncSession, lookup_hardcover: bool = True) -> 
     If lookup_hardcover is True, will also search Hardcover for books
     that don't have a hardcover_id.
     """
+    global _sync_status
+    
+    # Start API usage batching to avoid concurrent SQLite writes
+    batch_token = begin_api_usage_batch()
+    
+    try:
+        return await _sync_all_from_abs_impl(db, lookup_hardcover)
+    finally:
+        # Flush batched API usage counts at the end
+        try:
+            await flush_api_usage_batch(db)
+            await db.commit()
+        except Exception as e:
+            logger.warning("Failed to flush API usage batch: %s", e)
+        clear_api_usage_batch(batch_token)
+
+
+async def _sync_all_from_abs_impl(db: AsyncSession, lookup_hardcover: bool) -> AbsSyncStatus:
+    """Internal implementation of sync_all_from_abs."""
     global _sync_status
     
     # Get ABS settings
@@ -479,46 +510,29 @@ async def sync_all_from_abs(db: AsyncSession, lookup_hardcover: bool = True) -> 
             len(books_needing_hc), len(books)
         )
         
+        # Build set of existing HC IDs to avoid UNIQUE constraint violations
+        existing_hc_ids: set[int] = {b.hardcover_id for b in books if b.hardcover_id}
+        
         for book in books:
             _sync_status.books_processed += 1
+            book_id = book.id  # Store ID before any operations
+            book_title = book.title  # Store title before any operations
             
             try:
                 # Only pass hc_client for books that need HC lookup
                 client_for_book = hc_client if not book.hardcover_id else None
+                
                 updated = await sync_book_from_abs(
-                    book, url, api_key, abs_books, prefer_abs, client_for_book
+                    book, url, api_key, abs_books, prefer_abs, client_for_book, existing_hc_ids
                 )
                 
                 if updated:
-                    # Try to flush this book's changes
-                    try:
-                        await db.flush()
-                        _sync_status.books_updated += 1
-                    except Exception as flush_error:
-                        # Likely unique constraint on hardcover_id
-                        # Roll back this book's changes and just store contributors
-                        await db.rollback()
-                        if book.contributors:
-                            # Re-fetch the book and only set contributors
-                            refreshed = await db.get(Book, book.id)
-                            if refreshed and not refreshed.contributors:
-                                refreshed.contributors = book.contributors
-                                await db.flush()
-                                logger.info(
-                                    "Stored contributors for %s (HC ID conflict): %s",
-                                    book.title, book.contributors
-                                )
-                                _sync_status.books_updated += 1
-                            else:
-                                _sync_status.books_skipped += 1
-                        else:
-                            _sync_status.books_skipped += 1
-                        logger.debug("HC ID conflict for %s: %s", book.title, flush_error)
+                    _sync_status.books_updated += 1
                 else:
                     _sync_status.books_skipped += 1
                     
             except Exception as e:
-                logger.warning("Error syncing book %s: %s", book.title, e)
+                logger.warning("Error syncing book id=%s title=%s: %s", book_id, book_title, e)
                 _sync_status.books_failed += 1
         
         await db.commit()
@@ -563,7 +577,7 @@ async def lookup_abs_item_by_path(
     Returns the ABS item dict if found, None otherwise.
     """
     # Use internal URL for API call
-    internal_url = await get_best_abs_url(abs_url, abs_api_key)
+    internal_url = await get_internal_url(abs_url, abs_api_key)
     internal_url = internal_url.rstrip("/")
     headers = {"Authorization": f"Bearer {abs_api_key}"}
     

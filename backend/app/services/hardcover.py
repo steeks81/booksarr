@@ -19,7 +19,7 @@ API_URL = "https://api.hardcover.app/v1/graphql"
 MIN_REQUEST_INTERVAL_SECONDS = 1.35
 REQUEST_JITTER_MIN_SECONDS = 0.05
 REQUEST_JITTER_MAX_SECONDS = 0.15
-THROTTLE_RETRY_MIN_SECONDS = 30.0
+THROTTLE_RETRY_MAX_SECONDS = 300.0  # Cap at 5 minutes - fail rather than wait longer
 THROTTLE_RETRY_FALLBACK_SECONDS = 60.0
 RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 TRANSIENT_RETRY_ATTEMPTS = 3
@@ -134,18 +134,26 @@ class HardcoverClient:
 
     def _retry_after_seconds(self, response: httpx.Response) -> float:
         raw_value = response.headers.get("Retry-After")
+        logger.info("Hardcover Retry-After header: %r", raw_value)
         if not raw_value:
             return THROTTLE_RETRY_FALLBACK_SECONDS
 
         try:
-            return max(float(raw_value), THROTTLE_RETRY_MIN_SECONDS)
+            seconds = float(raw_value)
         except ValueError:
             try:
                 retry_at = parsedate_to_datetime(raw_value)
                 seconds = retry_at.timestamp() - time.time()
-                return max(seconds, THROTTLE_RETRY_MIN_SECONDS)
             except (TypeError, ValueError, OverflowError):
                 return THROTTLE_RETRY_FALLBACK_SECONDS
+
+        # Cap at max only - respect whatever HC asks, just don't wait forever
+        clamped = min(seconds, THROTTLE_RETRY_MAX_SECONDS)
+        if clamped < seconds:
+            logger.info("Hardcover Retry-After: raw=%.1fs, capped to %.1fs", seconds, clamped)
+        else:
+            logger.info("Hardcover Retry-After: %.1fs", seconds)
+        return clamped
 
     async def _query(self, query: str, variables: dict | None = None) -> dict:
         client = await self._get_client()

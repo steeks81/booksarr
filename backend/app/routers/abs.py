@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -235,11 +235,23 @@ async def get_abs_sync_status():
     )
 
 
-@router.post("/sync", response_model=SyncStatusResponse)
-async def start_abs_sync(db: AsyncSession = Depends(get_db)):
-    """Start syncing data from Audiobookshelf (authors and books: IDs, ASINs, images, covers)."""
-    global _sync_task
+async def _run_sync_in_background(db_url: str):
+    """Run sync in background with its own database session."""
+    from backend.app.database import async_session
     
+    async with async_session() as db:
+        try:
+            await sync_all_from_abs(db)
+        except Exception as e:
+            logger.exception("Background sync failed: %s", e)
+
+
+@router.post("/sync", response_model=SyncStatusResponse)
+async def start_abs_sync(background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """Start syncing data from Audiobookshelf (authors and books: IDs, ASINs, images, covers).
+    
+    Returns immediately - sync runs in background. Poll /sync-status for progress.
+    """
     # Check if already syncing
     current_status = get_sync_status()
     if current_status.status == "syncing":
@@ -258,22 +270,23 @@ async def start_abs_sync(db: AsyncSession = Depends(get_db)):
             message="Sync already in progress",
         )
     
-    # Run sync
-    result = await sync_all_from_abs(db)
+    # Start sync in background
+    background_tasks.add_task(_run_sync_in_background, str(db.get_bind().url) if db.get_bind() else "")
     
+    # Return immediately with "syncing" status
     return SyncStatusResponse(
-        status=result.status,
-        total_authors=result.total_authors,
-        total_books=result.total_books,
-        authors_processed=result.authors_processed,
-        authors_updated=result.authors_updated,
-        authors_skipped=result.authors_skipped,
-        authors_failed=result.authors_failed,
-        books_processed=result.books_processed,
-        books_updated=result.books_updated,
-        books_skipped=result.books_skipped,
-        books_failed=result.books_failed,
-        message=result.message,
+        status="syncing",
+        total_authors=0,
+        total_books=0,
+        authors_processed=0,
+        authors_updated=0,
+        authors_skipped=0,
+        authors_failed=0,
+        books_processed=0,
+        books_updated=0,
+        books_skipped=0,
+        books_failed=0,
+        message="Sync started",
     )
 
 
@@ -344,7 +357,7 @@ async def search_book_in_abs(
     db: AsyncSession = Depends(get_db),
 ):
     """Search for a book in ABS by title and author name."""
-    from backend.app.services.abs_sync import get_abs_settings as get_abs_settings_sync, get_best_abs_url
+    from backend.app.services.abs_sync import get_abs_settings as get_abs_settings_sync, get_internal_url, get_external_url
     import httpx
     import re
     
@@ -353,9 +366,10 @@ async def search_book_in_abs(
     if not enabled or not url or not api_key or not library_id:
         return SearchBookResponse(found=False)
     
-    # Use internal URL for API call
-    internal_url = await get_best_abs_url(url, api_key)
+    # Use internal URL for API call, external for browser links
+    internal_url = await get_internal_url(url, api_key)
     internal_url = internal_url.rstrip("/")
+    external_url = get_external_url(url)
     headers = {"Authorization": f"Bearer {api_key}"}
     
     # Build search query - just use title for broader search
@@ -441,7 +455,6 @@ async def search_book_in_abs(
             if not best_match:
                 return SearchBookResponse(found=False)
             
-            external_url = url.rstrip("/")
             item_id = best_match.get("id")
             title = best_match.get("media", {}).get("metadata", {}).get("title")
             

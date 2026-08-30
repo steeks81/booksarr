@@ -741,7 +741,7 @@ async def populate_cache(request: SeriesCachePopulateRequest):
                 book_id=str(hardcover_id),
                 series_name=primary_series.get("series_name"),
                 series_position=primary_series.get("position"),
-                series_count=None,  # We don't have this from DB, but it's optional
+                series_count=primary_series.get("series_count"),
             )
             populated += 1
     

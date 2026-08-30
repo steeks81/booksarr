@@ -368,7 +368,7 @@ async def _add_author_from_hardcover(
                 book.publish_date_checked_at = None
 
             for sr in hc_book.series_refs:
-                series = await _get_or_create_series(db, sr.id, sr.name)
+                series = await _get_or_create_series(db, sr.id, sr.name, sr.books_count)
                 existing_bs = await db.execute(
                     select(BookSeries).where(
                         BookSeries.book_id == book.id,
@@ -1053,6 +1053,7 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
                 series_id=s.id,
                 series_name=s.name,
                 position=bs.position,
+                series_count=s.books_count,
             ))
             if s.id not in series_map:
                 # Use the primary author from the first book in this series

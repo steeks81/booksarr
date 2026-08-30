@@ -1543,7 +1543,7 @@ async def _sync_author_hardcover_catalog(
             added_book_ids.append(book.id)
 
         for sr in hc_book.series_refs:
-            series = await _get_or_create_series(db, sr.id, sr.name)
+            series = await _get_or_create_series(db, sr.id, sr.name, sr.books_count)
             existing_bs = await db.execute(
                 select(BookSeries).where(
                     BookSeries.book_id == book.id,
@@ -2492,7 +2492,7 @@ async def run_full_sync(force: bool = False):
                             books_added += 1
 
                         for sr in hc_book.series_refs:
-                            series = await _get_or_create_series(db, sr.id, sr.name)
+                            series = await _get_or_create_series(db, sr.id, sr.name, sr.books_count)
                             existing_bs = await db.execute(
                                 select(BookSeries).where(
                                     BookSeries.book_id == book.id,
@@ -3643,12 +3643,16 @@ async def _refresh_book_from_scratch(db: AsyncSession, book: Book) -> None:
         await apply_manual_cover_selection(book)
 
 
-async def _get_or_create_series(db: AsyncSession, hardcover_id: int, name: str) -> Series:
+async def _get_or_create_series(
+    db: AsyncSession, hardcover_id: int, name: str, books_count: int | None = None
+) -> Series:
     result = await db.execute(select(Series).where(Series.hardcover_id == hardcover_id))
     series = result.scalar_one_or_none()
     if not series:
-        series = Series(hardcover_id=hardcover_id, name=name)
+        series = Series(hardcover_id=hardcover_id, name=name, books_count=books_count)
         db.add(series)
+    elif books_count is not None and series.books_count != books_count:
+        series.books_count = books_count
     await db.flush()
     return series
 
@@ -3662,13 +3666,13 @@ async def _replace_book_series_links(
     await db.execute(delete(BookSeries).where(BookSeries.book_id == book_id))
     await db.flush()
 
-    deduped_refs: dict[int, tuple[str, float | None]] = {}
+    deduped_refs: dict[int, tuple[str, float | None, int | None]] = {}
     for sr in series_refs:
         if sr.id not in deduped_refs:
-            deduped_refs[sr.id] = (sr.name, sr.position)
+            deduped_refs[sr.id] = (sr.name, sr.position, getattr(sr, 'books_count', None))
 
-    for hardcover_series_id, (name, position) in deduped_refs.items():
-        series = await _get_or_create_series(db, hardcover_series_id, name)
+    for hardcover_series_id, (name, position, books_count) in deduped_refs.items():
+        series = await _get_or_create_series(db, hardcover_series_id, name, books_count)
         db.add(BookSeries(
             book_id=book_id,
             series_id=series.id,

@@ -431,6 +431,12 @@ def run_schema_migrations(conn: Connection) -> None:
         "CREATE INDEX IF NOT EXISTS ix_irc_download_jobs_bulk_item_id ON irc_download_jobs (bulk_item_id)"
     )
 
+    # Series table migrations
+    series_rows = conn.exec_driver_sql("PRAGMA table_info(series)").fetchall()
+    existing_series_columns = {row[1] for row in series_rows}
+    if "books_count" not in existing_series_columns:
+        conn.exec_driver_sql("ALTER TABLE series ADD COLUMN books_count INTEGER")
+
 
 def _backfill_book_title_sort_keys(conn: Connection) -> None:
     rows = conn.exec_driver_sql(

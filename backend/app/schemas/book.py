@@ -5,6 +5,7 @@ class SeriesPositionInfo(BaseModel):
     series_id: int
     series_name: str
     position: float | None
+    series_count: int | None = None
 
 
 class LocalBookFile(BaseModel):

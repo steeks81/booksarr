@@ -221,9 +221,23 @@ export default function AuthorDetailPage() {
 
   const searchNormalized = search.trim().toLowerCase();
   const filteredBooks = (author?.books ?? []).filter((book) => {
-    // Apply search filter
-    if (searchNormalized && !book.title.toLowerCase().includes(searchNormalized)) {
-      return false;
+    // Apply search filter - match title, series name, or ISBN
+    if (searchNormalized) {
+      const titleMatch = book.title.toLowerCase().includes(searchNormalized);
+      const seriesMatch = book.series_info?.some(
+        (s) => s.series_name.toLowerCase().includes(searchNormalized)
+      );
+      const isbnMatch = (book.isbn?.toLowerCase().includes(searchNormalized)) ||
+        (book.hardcover_isbn_10?.toLowerCase().includes(searchNormalized)) ||
+        (book.hardcover_isbn_13?.toLowerCase().includes(searchNormalized)) ||
+        (book.google_isbn_10?.toLowerCase().includes(searchNormalized)) ||
+        (book.google_isbn_13?.toLowerCase().includes(searchNormalized)) ||
+        (book.ol_isbn_10?.toLowerCase().includes(searchNormalized)) ||
+        (book.ol_isbn_13?.toLowerCase().includes(searchNormalized)) ||
+        (book.manual_isbn?.toLowerCase().includes(searchNormalized));
+      if (!titleMatch && !seriesMatch && !isbnMatch) {
+        return false;
+      }
     }
     // Apply book filters (owned/missing/format)
     if (filters.length > 0 && !filters.some((filter) => bookMatchesFilter(book, filter))) {

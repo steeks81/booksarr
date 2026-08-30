@@ -268,6 +268,7 @@ def _book_summary(book: Book) -> BookSummary:
                 series_id=bs.series.id,
                 series_name=bs.series.name,
                 position=bs.position,
+                series_count=bs.series.books_count,
             )
             for bs in book.book_series
         ],
@@ -579,6 +580,7 @@ async def get_book(book_id: int, db: AsyncSession = Depends(get_db)):
             series_id=bs.series.id,
             series_name=bs.series.name,
             position=bs.position,
+            series_count=bs.series.books_count,
         )
         for bs in book.book_series
     ]

@@ -93,6 +93,7 @@ export interface SeriesPositionInfo {
   series_id: number;
   series_name: string;
   position: number | null;
+  series_count?: number | null;
 }
 
 export interface LocalBookFile {

@@ -63,6 +63,7 @@ class HCSeriesRef:
     id: int
     name: str
     position: float | None = None
+    books_count: int | None = None
 
 
 @dataclass
@@ -393,7 +394,7 @@ class HardcoverClient:
             cached_tags rating pages users_count
             book_series {
               position
-              series { id name }
+              series { id name books_count }
             }
           }
         }
@@ -432,7 +433,7 @@ class HardcoverClient:
             cached_tags rating pages users_count
             book_series {
               position
-              series { id name }
+              series { id name books_count }
             }
           }
         }
@@ -473,6 +474,7 @@ class HardcoverClient:
                     id=s["id"],
                     name=s.get("name", ""),
                     position=bs.get("position"),
+                    books_count=s.get("books_count"),
                 ))
 
         language = ""

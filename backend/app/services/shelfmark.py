@@ -20,7 +20,7 @@ from typing import Any, AsyncGenerator
 import httpx
 
 from backend.app.database import async_session
-from backend.app.models import Setting
+from backend.app.models import Setting, Book, Series, BookSeries
 from sqlalchemy import select
 
 logger = logging.getLogger("booksarr.shelfmark")
@@ -90,6 +90,67 @@ def clear_series_cache() -> None:
     """Clear the series cache."""
     _series_cache.clear()
     logger.info("Series cache cleared")
+
+
+async def persist_series_to_db(
+    hardcover_id: int,
+    series_name: str,
+    series_position: float | None,
+) -> bool:
+    """
+    Persist series info to DB if the book exists by hardcover_id.
+    
+    Creates Series record if needed, then links via BookSeries.
+    Returns True if persisted, False if book not found in DB.
+    """
+    async with async_session() as db:
+        # Find book by hardcover_id
+        result = await db.execute(
+            select(Book).where(Book.hardcover_id == hardcover_id)
+        )
+        book = result.scalar_one_or_none()
+        
+        if not book:
+            return False
+        
+        # Get or create series (by name since we don't have HC series ID from SM)
+        result = await db.execute(
+            select(Series).where(Series.name == series_name)
+        )
+        series = result.scalar_one_or_none()
+        
+        if not series:
+            series = Series(name=series_name)
+            db.add(series)
+            await db.flush()
+        
+        # Check if book_series link already exists
+        result = await db.execute(
+            select(BookSeries).where(
+                BookSeries.book_id == book.id,
+                BookSeries.series_id == series.id,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        
+        if not existing:
+            db.add(BookSeries(
+                book_id=book.id,
+                series_id=series.id,
+                position=series_position,
+            ))
+            await db.commit()
+            logger.debug("Persisted series '%s' pos=%s for book %d (hc:%d)", 
+                        series_name, series_position, book.id, hardcover_id)
+            return True
+        
+        # Link exists - update position if different
+        if existing.position != series_position:
+            existing.position = series_position
+            await db.commit()
+            logger.debug("Updated series position to %s for book %d", series_position, book.id)
+        
+        return True
 
 
 @dataclass
@@ -613,6 +674,9 @@ async def enrich_series_stream(
     cache_misses = 0
     last_ping = time.monotonic()
     
+    # Log cache state at start
+    logger.info("Series enrichment starting: %d books to process, cache size=%d", total, len(_series_cache))
+    
     for i, book in enumerate(books):
         provider = book.get("provider")
         book_id = book.get("book_id")
@@ -633,6 +697,7 @@ async def enrich_series_stream(
         cached = get_series_from_cache(provider, book_id)
         if cached is not None:
             cache_hits += 1
+            logger.debug("Cache hit for %s:%s -> series=%s pos=%s", provider, book_id, cached.series_name, cached.series_position)
             if cached.series_position is not None:
                 yield {
                     "type": "series",
@@ -644,6 +709,7 @@ async def enrich_series_stream(
             continue
         
         cache_misses += 1
+        logger.info("Cache miss for %s:%s (cache has %d entries)", provider, book_id, len(_series_cache))
         
         # Check if we're in delayed mode
         now = time.monotonic()
@@ -672,6 +738,20 @@ async def enrich_series_stream(
                 detail.series_position,
                 detail.series_count,
             )
+            
+            # Persist to DB if hardcover provider and has series info
+            if provider == "hardcover" and detail.series_name and detail.series_position is not None:
+                try:
+                    persisted = await persist_series_to_db(
+                        hardcover_id=int(book_id),
+                        series_name=detail.series_name,
+                        series_position=detail.series_position,
+                    )
+                    if persisted:
+                        logger.info("Persisted series '%s' pos=%s to DB for hardcover:%s", 
+                                   detail.series_name, detail.series_position, book_id)
+                except Exception as e:
+                    logger.warning("Failed to persist series to DB for hardcover:%s: %s", book_id, e)
             
             if detail.series_position is not None:
                 yield {

@@ -37,6 +37,44 @@ export function useHiddenBooks(search: string = "") {
   });
 }
 
+export interface ProviderMatchEntry {
+  book_id: number;
+  hardcover_id: string | null;
+  google_id: string | null;
+  title: string;
+  author_name: string | null;
+  description: string | null;
+  release_date: string | null;
+  rating: number | null;
+  pages: number | null;
+  isbn: string | null;
+  all_isbns: string[];
+  is_owned: boolean;
+  formats: string[];
+  cover_path: string | null;
+  series_name: string | null;
+  series_position: number | null;
+  series_count: number | null;
+}
+
+export interface ProviderMatchResponse {
+  by_hardcover_id: Record<string, ProviderMatchEntry>;
+  by_google_id: Record<string, ProviderMatchEntry>;
+  by_isbn: Record<string, ProviderMatchEntry>;
+}
+
+export function useProviderMatch(authorId: number | null, enabled: boolean = true) {
+  return useQuery({
+    queryKey: ["provider-match", authorId],
+    queryFn: () => {
+      const params = authorId ? `?author_id=${authorId}` : "";
+      return fetchApi<ProviderMatchResponse>(`/books/provider-match${params}`);
+    },
+    enabled,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
 export function useUnmatchedFiles() {
   return useQuery({
     queryKey: ["unmatchedFiles"],

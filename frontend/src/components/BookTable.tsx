@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import type { Book, BookInAuthor } from "../types";
 import { getBookCoverPresentation, getImageUrl } from "../types";
 import { useRefreshBook, useSetBookVisibility } from "../api/books";
-import { useAbsLookupBook } from "../api/abs";
+import { useAbsLookupBook, useAbsSearchBook } from "../api/abs";
 import { useSettings } from "../api/settings";
 import CoverPickerDialog from "./CoverPickerDialog";
 import IrcSearchDialog from "./IrcSearchDialog";
@@ -44,10 +44,11 @@ function formatSeriesPosition(book: BookLike): string {
   }
   if (!("series_info" in book) || !book.series_info || book.series_info.length === 0) return "";
   const si = book.series_info[0];
-  const pos = si.position != null
-    ? (Number.isInteger(si.position) ? `#${si.position}` : `#${si.position.toFixed(1)}`)
+  const pos = si.series_position != null
+    ? (Number.isInteger(si.series_position) ? `#${si.series_position}` : `#${si.series_position.toFixed(1)}`)
     : "";
-  return pos ? `${si.series_name} ${pos}` : si.series_name;
+  const name = si.series_name ?? "";
+  return pos ? `${name} ${pos}` : name;
 }
 
 const FORMAT_BADGES: { key: string; label: string; activeClass: string }[] = [
@@ -203,6 +204,7 @@ export default function BookTable({
   books,
   showAuthor = true,
   authorName: contextAuthorName = null,
+  authorId = null,
   selectedBookIds,
   onToggleSelected,
   scrollRequest,
@@ -211,6 +213,7 @@ export default function BookTable({
   books: BookLike[];
   showAuthor?: boolean;
   authorName?: string | null;
+  authorId?: number | null;
   selectedBookIds?: Set<number>;
   onToggleSelected?: (bookId: number) => void;
   scrollRequest?: { id: number; index: number; sequence: number } | null;
@@ -219,12 +222,13 @@ export default function BookTable({
   const refreshBook = useRefreshBook();
   const setBookVisibility = useSetBookVisibility();
   const absLookup = useAbsLookupBook();
+  const absSearch = useAbsSearchBook();
   const { data: settings } = useSettings();
   const [absLookupPending, setAbsLookupPending] = useState<number | null>(null);
   const [absSearchPending, setAbsSearchPending] = useState<number | null>(null);
   const [coverPickerBook, setCoverPickerBook] = useState<{ id: number; title: string } | null>(null);
   const [ircSearchBook, setIrcSearchBook] = useState<{ id: number; title: string; authorName: string | null } | null>(null);
-  const [shelfmarkSearchBook, setShelfmarkSearchBook] = useState<{ id: number; title: string; authorName: string | null; series: string | null } | null>(null);
+  const [shelfmarkSearchBook, setShelfmarkSearchBook] = useState<{ id: number; title: string; authorName: string | null; authorId: number | null; series: string | null } | null>(null);
   const [metadataInfoBook, setMetadataInfoBook] = useState<{ id: number; title: string } | null>(null);
   const [actionMenuBookId, setActionMenuBookId] = useState<number | null>(null);
   const [actionMenuPosition, setActionMenuPosition] = useState<{ left: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
@@ -611,6 +615,7 @@ export default function BookTable({
         bookId={shelfmarkSearchBook?.id ?? null}
         title={shelfmarkSearchBook?.title ?? ""}
         authorName={shelfmarkSearchBook?.authorName ?? null}
+        authorId={shelfmarkSearchBook?.authorId ?? authorId}
         series={shelfmarkSearchBook?.series}
         open={shelfmarkSearchBook !== null}
         onClose={() => setShelfmarkSearchBook(null)}
@@ -735,7 +740,10 @@ export default function BookTable({
                   onClick={async () => {
                     setAbsSearchPending(menuBook.id);
                     try {
-                      const result = await absLookup.mutateAsync(menuBook.title);
+                      const result = await absSearch.mutateAsync({
+                        title: menuBook.title,
+                        author_name: menuAuthorName ?? contextAuthorName ?? undefined,
+                      });
                       if (result.found && result.abs_url) {
                         setActionMenuBookId(null);
                         setActionMenuPosition(null);
@@ -806,6 +814,7 @@ export default function BookTable({
                       id: menuBook.id,
                       title: menuBook.title,
                       authorName: menuAuthorName ?? contextAuthorName ?? null,
+                      authorId: isFullBook(menuBook) ? menuBook.author_id : authorId,
                       series: menuBook.series_info?.[0]?.series_name ?? null,
                     });
                   }}

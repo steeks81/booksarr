@@ -41,9 +41,8 @@ def _title_variants(title: str) -> set[str]:
 
     if " - " in raw:
         parts = [part.strip() for part in raw.split(" - ") if part.strip()]
-        if len(parts) >= 2:
-            variants.add(normalize_title(parts[0]))   # First part (main title)
-            variants.add(normalize_title(parts[-1]))  # Last part (subtitle)
+        for part in parts:
+            variants.add(normalize_title(part))
 
     return {variant for variant in variants if variant}
 

@@ -14,8 +14,8 @@ function isFullBook(book: BookLike): book is Book {
 function getSeriesLabel(book: BookLike): string | null {
   if (!book.series_info?.length) return null;
   const series = book.series_info[0];
-  if (series.position == null) return series.series_name;
-  return `${series.series_name} #${Number.isInteger(series.position) ? series.position : series.position.toFixed(1)}`;
+  if (series.series_position == null) return series.series_name;
+  return `${series.series_name} #${Number.isInteger(series.series_position) ? series.series_position : series.series_position.toFixed(1)}`;
 }
 
 export default function MobileBookList({

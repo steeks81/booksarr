@@ -9,9 +9,15 @@ import json
 import logging
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.database import get_db
+from backend.app.models.author import Author
+from backend.app.models.series import Series
 
 from backend.app.services.shelfmark import (
     search as shelfmark_search,
@@ -25,9 +31,14 @@ from backend.app.services.shelfmark import (
     retry_download as shelfmark_retry_download,
     dismiss_many_downloads as shelfmark_dismiss_many,
     enrich_series_stream as shelfmark_enrich_series,
+    queue_enrich_books,
+    get_enrich_status,
+    get_cached_series_for,
     get_series_from_cache,
     set_series_in_cache,
     get_series_cache_stats,
+    dump_series_cache,
+    restore_series_cache,
     clear_series_cache,
 )
 
@@ -43,6 +54,11 @@ class ShelfmarkSearchRequest(BaseModel):
     series: str | None = None
     author: str | None = None
     title: str | None = None
+    isbn: str | None = None
+    # Optional Hardcover ids (from our DB). When present, search by id for the
+    # clean by-id catalog path instead of a capped keyword search.
+    author_hardcover_id: int | None = None
+    series_hardcover_id: int | None = None
 
 
 class ShelfmarkDisplayField(BaseModel):
@@ -69,6 +85,7 @@ class ShelfmarkSearchResultItem(BaseModel):
     source_url: str | None = None
     isbn: str | None = None
     # Series info
+    series_id: str | None = None  # Provider-specific series ID (e.g., HC series id)
     series_name: str | None = None
     series_position: float | None = None
     series_count: int | None = None
@@ -100,7 +117,7 @@ class ShelfmarkTestConnectionRequest(BaseModel):
 
 
 @router.post("/search", response_model=ShelfmarkSearchResponse)
-async def search(body: ShelfmarkSearchRequest):
+async def search(body: ShelfmarkSearchRequest, db: AsyncSession = Depends(get_db)):
     """
     Search Shelfmark for books.
     
@@ -109,8 +126,35 @@ async def search(body: ShelfmarkSearchRequest):
     
     Returns results with shelfmark_url so frontend can construct
     direct links to download in Shelfmark.
+    
+    If author/series name is provided without a hardcover_id, looks up
+    the ID from our local DB to enable the more complete by-id search path.
     """
-    logger.info("Shelfmark search: query=%r media_type=%s series=%r author=%r title=%r", body.query, body.media_type, body.series, body.author, body.title)
+    logger.info("Shelfmark search: query=%r media_type=%s series=%r author=%r title=%r series_hc_id=%r author_hc_id=%r", body.query, body.media_type, body.series, body.author, body.title, body.series_hardcover_id, body.author_hardcover_id)
+    
+    # Effective IDs - start with what was passed, upgrade via DB lookup if needed
+    author_hc_id = body.author_hardcover_id
+    series_hc_id = body.series_hardcover_id
+    
+    # If author search by name only, try to find hardcover_id in our DB
+    if body.author and not author_hc_id:
+        result = await db.execute(
+            select(Author.hardcover_id).where(Author.name == body.author)
+        )
+        db_author_id = result.scalar_one_or_none()
+        if db_author_id:
+            author_hc_id = db_author_id
+            logger.info("Search type: AUTHOR ID upgraded via DB lookup: %d", author_hc_id)
+    
+    # If series search by name only, try to find hardcover_id in our DB
+    if body.series and not series_hc_id:
+        result = await db.execute(
+            select(Series.hardcover_id).where(Series.name == body.series)
+        )
+        db_series_id = result.scalar_one_or_none()
+        if db_series_id:
+            series_hc_id = db_series_id
+            logger.info("Search type: SERIES ID upgraded via DB lookup: %d", series_hc_id)
     
     # Log the effective search type for debugging
     if body.series:
@@ -119,10 +163,16 @@ async def search(body: ShelfmarkSearchRequest):
         logger.info("Search type: AUTHOR search for %r", body.author)
     elif body.title:
         logger.info("Search type: TITLE search for %r", body.title)
+    elif body.isbn:
+        logger.info("Search type: ISBN search for %r", body.isbn)
     elif body.query:
         logger.info("Search type: GENERAL search for %r", body.query)
-    
-    result = await shelfmark_search(body.query, body.media_type, body.series, body.author, body.title)
+    result = await shelfmark_search(
+        body.query, body.media_type, body.series, body.author, body.title,
+        isbn=body.isbn,
+        author_hardcover_id=author_hc_id,
+        series_hardcover_id=series_hc_id,
+    )
     
     return ShelfmarkSearchResponse(
         query=result.query,
@@ -141,6 +191,7 @@ async def search(body: ShelfmarkSearchRequest):
                 description=r.description,
                 source_url=r.source_url,
                 isbn=r.isbn,
+                series_id=r.series_id,
                 series_name=r.series_name,
                 series_position=r.series_position,
                 series_count=r.series_count,
@@ -171,10 +222,22 @@ async def enrich_series(body: ShelfmarkSeriesEnrichRequest):
     - progress: {"type": "progress", "current": 5, "total": 20}
     - series: {"type": "series", "book_id": "...", "series_name": "...", ...}
     - done: {"type": "done"}
+    
+    DEPRECATED: Use POST /search/enrich-series/start + POST /search/enrich-series/status
+    for browser/proxy timeout resilience.
     """
     async def event_generator():
-        async for event in shelfmark_enrich_series(body.books):
-            yield f"data: {json.dumps(event)}\n\n"
+        sent_done = False
+        try:
+            async for event in shelfmark_enrich_series(body.books):
+                if event.get("type") == "done":
+                    sent_done = True
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            # If the stream ends without a 'done' event, the client (or Traefik)
+            # closed the SSE connection early. Log it so cut-short runs are visible.
+            if not sent_done:
+                logger.warning("enrich-series SSE stream ended WITHOUT 'done' (client/proxy disconnect)")
     
     return StreamingResponse(
         event_generator(),
@@ -183,6 +246,71 @@ async def enrich_series(body: ShelfmarkSeriesEnrichRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         },
+    )
+
+
+# --- Background enrichment: single shared worker + append/prepend queue ---
+
+class EnrichSeriesStartResponse(BaseModel):
+    """Response from enrichment start/queue endpoint."""
+    already_cached: int
+    queued: int
+    queue_size: int
+
+
+class EnrichSeriesStatusRequest(BaseModel):
+    """Request body for enrichment status - the caller's own book_ids."""
+    books: list[dict]  # [{"provider": "...", "book_id": "..."}]
+
+
+class EnrichSeriesStatusResponse(BaseModel):
+    """Per-search enrichment status.
+
+    - `series` holds cached series data for THIS search's books (fills the table).
+    - `done`/`total` are computed from the caller's books (per-search X/Y).
+    - `worker_running`/`rate_limited`/`message` reflect the global shared worker.
+    """
+    done: int
+    total: int
+    series: dict  # book_id -> {series_name, series_position, series_count}
+    worker_running: bool
+    rate_limited: bool
+    message: str | None
+
+
+@router.post("/search/enrich-series/start", response_model=EnrichSeriesStartResponse)
+async def start_enrich_series(body: ShelfmarkSeriesEnrichRequest):
+    """
+    Queue books for background series enrichment (single shared worker).
+    
+    Returns immediately. New books are prepended (current search prioritized) and
+    deduped against the cache + existing queue. Poll the status endpoint for progress.
+    Completes even if browser/Traefik disconnects.
+    """
+    result = await queue_enrich_books(body.books)
+    logger.info("Series enrichment queued: %d books (%d already cached, %d newly queued, queue=%d)",
+                len(body.books), result["already_cached"], result["queued"], result["queue_size"])
+    return EnrichSeriesStartResponse(**result)
+
+
+@router.post("/search/enrich-series/status", response_model=EnrichSeriesStatusResponse)
+async def get_enrich_series_status(body: EnrichSeriesStatusRequest):
+    """
+    Get enrichment status for the caller's books.
+    
+    Poll this endpoint (~1.5s interval). Send the search's book_ids; get back which
+    are cached (with series data) and the global worker/rate-limit state.
+    """
+    status = get_enrich_status()
+    series = get_cached_series_for(body.books)
+    total = sum(1 for b in body.books if b.get("provider") and b.get("book_id"))
+    return EnrichSeriesStatusResponse(
+        done=len(series),
+        total=total,
+        series=series,
+        worker_running=(status.status == "running"),
+        rate_limited=status.rate_limited,
+        message=status.message,
     )
 
 
@@ -710,6 +838,14 @@ async def get_cache_stats():
     )
 
 
+@router.get("/rate-limit/stats")
+async def get_rate_limit_stats():
+    """Get Hardcover rate limiter statistics for debugging."""
+    from backend.app.services.shelfmark import get_hc_rate_limiter
+    limiter = get_hc_rate_limiter()
+    return limiter.get_stats()
+
+
 @router.post("/series/cache-clear")
 async def clear_cache():
     """Clear the series cache."""
@@ -729,6 +865,7 @@ async def populate_cache(request: SeriesCachePopulateRequest):
     for book in request.books:
         hardcover_id = book.get("hardcover_id")
         series_info = book.get("series_info", [])
+        isbn = book.get("isbn")  # Best ISBN from frontend
         
         if not hardcover_id or not series_info:
             continue
@@ -736,14 +873,68 @@ async def populate_cache(request: SeriesCachePopulateRequest):
         # Use first series (primary) for cache
         primary_series = series_info[0] if series_info else None
         if primary_series:
+            # Use provider_id (HC ID) for SM cache, not id (internal BA ID)
+            provider_id = primary_series.get("provider_id")
+            if not provider_id:
+                continue  # Skip if no provider ID - can't use for SM search
             set_series_in_cache(
                 provider="hardcover",
                 book_id=str(hardcover_id),
+                provider_id=str(provider_id),
                 series_name=primary_series.get("series_name"),
-                series_position=primary_series.get("position"),
+                series_position=primary_series.get("series_position"),
                 series_count=primary_series.get("series_count"),
+                isbn=isbn,
             )
             populated += 1
     
     logger.info("Series cache populated from DB: %d books", populated)
     return {"status": "populated", "count": populated}
+
+
+# --- DEBUG/TESTING: Enrichment allowlist and cache dump/restore endpoints ---
+# These endpoints support testing without hitting external APIs.
+# Safe to remove in production if not needed. Search "DEBUG/TESTING" to find all related code.
+
+
+class EnrichAllowlistRequest(BaseModel):
+    """DEBUG: Request to set enrichment allowlist for testing."""
+    book_ids: list[str] | None = None  # List of "provider:book_id" strings, or None to clear
+
+
+@router.post("/series/enrich-allowlist")
+async def set_enrichment_allowlist(body: EnrichAllowlistRequest):
+    """DEBUG: Set or clear the enrichment allowlist (testing mode).
+    
+    When set, only these book IDs will hit SM for enrichment.
+    Others skip silently (no SM calls). Set to null/empty to allow all.
+    """
+    from backend.app.services.shelfmark import set_enrich_allowlist
+    
+    if body.book_ids:
+        set_enrich_allowlist(set(body.book_ids))
+        return {"status": "set", "count": len(body.book_ids), "allowlist": body.book_ids}
+    else:
+        set_enrich_allowlist(None)
+        return {"status": "cleared", "message": "All books allowed for enrichment"}
+
+
+@router.get("/series/cache-dump")
+async def dump_cache():
+    """DEBUG: Dump full cache contents for backup. Returns list of cache entries."""
+    entries = dump_series_cache()
+    return {"count": len(entries), "entries": entries}
+
+
+class SeriesCacheRestoreRequest(BaseModel):
+    """DEBUG: Request body for restoring series cache from dump."""
+    entries: list[dict]
+
+
+@router.post("/series/cache-restore")
+async def restore_cache(request: SeriesCacheRestoreRequest):
+    """DEBUG: Restore series cache from a previous dump."""
+    count = restore_series_cache(request.entries)
+    return {"status": "restored", "count": count}
+
+# --- END DEBUG/TESTING ---

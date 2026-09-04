@@ -86,7 +86,7 @@ export default function AuthorDetailPage() {
   const [selectedBookIds, setSelectedBookIds] = useState<Set<number>>(new Set());
   const [linkedFilePopoverPath, setLinkedFilePopoverPath] = useState<string | null>(null);
   const [urlBookModal, setUrlBookModal] = useState<{ id: number; title: string } | null>(null);
-  const [shelfmarkSearchQuery, setShelfmarkSearchQuery] = useState<{ title: string; authorName: string | null; series?: string; authorSearch?: string } | null>(null);
+  const [shelfmarkSearchQuery, setShelfmarkSearchQuery] = useState<{ title: string; authorName: string | null; series?: string; authorSearch?: string; authorHardcoverId?: number | null; seriesHardcoverId?: number | null } | null>(null);
   const [cacheProgress, setCacheProgress] = useState<{ current: number; total: number } | null>(null);
   const portraitMenuRef = useRef<HTMLDivElement | null>(null);
   const refreshMenuRef = useRef<HTMLDivElement | null>(null);
@@ -196,7 +196,12 @@ export default function AuthorDetailPage() {
     // Get books with Hardcover IDs and series info
     const booksWithSeriesInfo = author.books
       .filter((b) => b.hardcover_id && b.series_info?.length)
-      .map((b) => ({ hardcover_id: b.hardcover_id, series_info: b.series_info }));
+      .map((b) => ({ 
+        hardcover_id: b.hardcover_id, 
+        series_info: b.series_info,
+        // Include best ISBN for cache (prefer isbn_13 over isbn_10)
+        isbn: b.hardcover_isbn_13 || b.hardcover_isbn_10 || b.isbn || null,
+      }));
     
     if (booksWithSeriesInfo.length === 0) return;
     
@@ -225,7 +230,7 @@ export default function AuthorDetailPage() {
     if (searchNormalized) {
       const titleMatch = book.title.toLowerCase().includes(searchNormalized);
       const seriesMatch = book.series_info?.some(
-        (s) => s.series_name.toLowerCase().includes(searchNormalized)
+        (s) => s.series_name?.toLowerCase().includes(searchNormalized)
       );
       const isbnMatch = (book.isbn?.toLowerCase().includes(searchNormalized)) ||
         (book.hardcover_isbn_10?.toLowerCase().includes(searchNormalized)) ||
@@ -386,7 +391,7 @@ export default function AuthorDetailPage() {
                     </span>
                     <button
                       type="button"
-                      onClick={() => setShelfmarkSearchQuery({ title: "", authorName: s.primary_author_name, series: s.name })}
+                      onClick={() => setShelfmarkSearchQuery({ title: "", authorName: s.primary_author_name, series: s.name, seriesHardcoverId: s.hardcover_id })}
                       className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
                       title="Search series in Shelfmark"
                     >
@@ -399,6 +404,7 @@ export default function AuthorDetailPage() {
                     books={seriesFullBooks}
                     showAuthor={false}
                     authorName={author.name}
+                    authorId={authorId}
                     selectedBookIds={showBulkIrcControls ? selectedBookIds : undefined}
                     onToggleSelected={showBulkIrcControls ? toggleBookSelection : undefined}
                     virtualized={false}
@@ -413,6 +419,7 @@ export default function AuthorDetailPage() {
                   books={standaloneBooks}
                   showAuthor={false}
                   authorName={author.name}
+                  authorId={authorId}
                   selectedBookIds={showBulkIrcControls ? selectedBookIds : undefined}
                   onToggleSelected={showBulkIrcControls ? toggleBookSelection : undefined}
                   virtualized={false}
@@ -427,6 +434,7 @@ export default function AuthorDetailPage() {
           books={sortedBooks}
           showAuthor={false}
           authorName={author.name}
+          authorId={authorId}
           selectedBookIds={showBulkIrcControls ? selectedBookIds : undefined}
           onToggleSelected={showBulkIrcControls ? toggleBookSelection : undefined}
         />
@@ -438,7 +446,7 @@ export default function AuthorDetailPage() {
       return (
         <>
           {filteredSeries.map((s) => (
-            <SeriesGroup key={s.id} series={s} allBooks={sortedBooks} authorName={author.name} />
+            <SeriesGroup key={s.id} series={s} allBooks={sortedBooks} authorName={author.name} authorId={authorId} />
           ))}
           {standaloneBooks.length > 0 && (
             <div className="mb-8">
@@ -672,7 +680,11 @@ export default function AuthorDetailPage() {
                           // Pre-populate series cache from DB before author search
                           const booksWithSeriesInfo = author.books
                             .filter((b) => b.hardcover_id && b.series_info?.length)
-                            .map((b) => ({ hardcover_id: b.hardcover_id, series_info: b.series_info }));
+                            .map((b) => ({ 
+                              hardcover_id: b.hardcover_id, 
+                              series_info: b.series_info,
+                              isbn: b.hardcover_isbn_13 || b.hardcover_isbn_10 || b.isbn || null,
+                            }));
                           if (booksWithSeriesInfo.length > 0) {
                             fetch("/api/shelfmark/series/cache-populate", {
                               method: "POST",
@@ -680,7 +692,7 @@ export default function AuthorDetailPage() {
                               body: JSON.stringify({ books: booksWithSeriesInfo }),
                             }).catch(() => {});
                           }
-                          setShelfmarkSearchQuery({ title: "", authorName: null, authorSearch: author.name });
+                          setShelfmarkSearchQuery({ title: "", authorName: null, authorSearch: author.name, authorHardcoverId: author.hardcover_id });
                         }}
                         className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
                       >
@@ -1158,6 +1170,9 @@ export default function AuthorDetailPage() {
         bookId={null}
         title={shelfmarkSearchQuery?.title ?? ""}
         authorName={shelfmarkSearchQuery?.authorName ?? null}
+        authorId={authorId}
+        authorHardcoverId={shelfmarkSearchQuery?.authorHardcoverId}
+        seriesHardcoverId={shelfmarkSearchQuery?.seriesHardcoverId}
         series={shelfmarkSearchQuery?.series}
         authorSearch={shelfmarkSearchQuery?.authorSearch}
         open={shelfmarkSearchQuery !== null}

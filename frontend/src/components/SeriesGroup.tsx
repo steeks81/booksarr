@@ -7,10 +7,12 @@ export default function SeriesGroup({
   series,
   allBooks,
   authorName,
+  authorId,
 }: {
   series: SeriesInAuthor;
   allBooks: BookInAuthor[];
   authorName: string;
+  authorId: number;
 }) {
   const ownedCount = series.books.filter((b) => b.is_owned).length;
   const [shelfmarkOpen, setShelfmarkOpen] = useState(false);
@@ -44,7 +46,7 @@ export default function SeriesGroup({
                   {Number.isInteger(sb.position) ? sb.position : sb.position.toFixed(1)}
                 </div>
               )}
-              <BookCard book={fullBook} authorName={authorName} />
+              <BookCard book={fullBook} authorName={authorName} authorId={authorId} />
             </div>
           );
         })}
@@ -53,7 +55,9 @@ export default function SeriesGroup({
         bookId={null}
         title=""
         authorName={series.primary_author_name}
+        authorId={authorId}
         series={series.name}
+        seriesHardcoverId={series.hardcover_id}
         open={shelfmarkOpen}
         onClose={() => setShelfmarkOpen(false)}
       />

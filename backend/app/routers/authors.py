@@ -1042,7 +1042,7 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
         for linked_book in [local_file_book_map.get(file_path)]
     ]
 
-    # Build series map
+    # Build series map - collect books and author counts first
     series_map: dict[int, dict] = {}
     books_out = []
     for book in books:
@@ -1050,21 +1050,28 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
         for bs in _display_book_series_links(book):
             s = bs.series
             series_info.append(SeriesPositionInfo(
-                series_id=s.id,
+                id=s.id,
+                provider_id=str(s.hardcover_id) if s.hardcover_id else None,
                 series_name=s.name,
-                position=bs.position,
+                series_position=bs.position,
                 series_count=s.books_count,
             ))
             if s.id not in series_map:
-                # Use the primary author from the first book in this series
-                primary_author = book.author.name if book.author else None
                 series_map[s.id] = {
                     "id": s.id,
                     "name": s.name,
                     "hardcover_id": s.hardcover_id,
-                    "primary_author_name": primary_author,
+                    "primary_author_name": None,  # Will be set after collecting all books
                     "books": [],
+                    "_author_counts": {},  # Temporary: count author_id occurrences
+                    "_author_names": {},  # Temporary: map author_id -> name
                 }
+            # Track author_id counts for majority vote
+            author_id = book.author_id if book.author else None
+            if author_id:
+                series_map[s.id]["_author_counts"][author_id] = series_map[s.id]["_author_counts"].get(author_id, 0) + 1
+                if author_id not in series_map[s.id]["_author_names"]:
+                    series_map[s.id]["_author_names"][author_id] = book.author.name if book.author else None
             series_map[s.id]["books"].append(SeriesBookEntry(
                 book_id=book.id,
                 title=effective_title(book),
@@ -1125,6 +1132,15 @@ async def get_author(author_id: int, db: AsyncSession = Depends(get_db)):
             series_info=series_info,
             abs_book_id=book.abs_book_id,
         ))
+
+    # Determine primary_author_name for each series using majority vote
+    for s_data in series_map.values():
+        author_counts = s_data.pop("_author_counts", {})
+        author_names = s_data.pop("_author_names", {})
+        if author_counts:
+            # Find author_id with most books in this series
+            primary_author_id = max(author_counts, key=author_counts.get)
+            s_data["primary_author_name"] = author_names.get(primary_author_id)
 
     # Sort series books by position
     series_out = []

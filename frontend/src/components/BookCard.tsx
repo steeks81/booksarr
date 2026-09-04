@@ -52,11 +52,22 @@ function OwnedBadge({ count }: { count: number }) {
   );
 }
 
+function MissingBadge() {
+  return (
+    <div className="absolute top-2 right-2 rounded-full bg-amber-500 p-1" title="In catalog (watching)">
+      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="white">
+        <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+      </svg>
+    </div>
+  );
+}
+
 export default function BookCard({
   book,
   onClick,
   showAuthor = false,
   authorName = null,
+  authorId = null,
   selected = false,
   onToggleSelected,
 }: {
@@ -64,6 +75,7 @@ export default function BookCard({
   onClick?: () => void;
   showAuthor?: boolean;
   authorName?: string | null;
+  authorId?: number | null;
   selected?: boolean;
   onToggleSelected?: () => void;
 }) {
@@ -492,6 +504,7 @@ export default function BookCard({
         bookId={book.id}
         title={book.title}
         authorName={isFullBook(book) ? book.author_name : authorName}
+        authorId={isFullBook(book) ? book.author_id : authorId}
         series={book.series_info?.[0]?.series_name}
         open={shelfmarkSearchOpen}
         onClose={() => setShelfmarkSearchOpen(false)}

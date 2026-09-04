@@ -19,6 +19,8 @@ from backend.app.schemas.book import (
     HiddenBookSummary,
     HiddenCategoryTag,
     LocalBookFile,
+    ProviderMatchEntry,
+    ProviderMatchResponse,
     SeriesPositionInfo,
     BookCoverOptionsResponse,
     CoverOption,
@@ -265,9 +267,10 @@ def _book_summary(book: Book) -> BookSummary:
         ],
         series_info=[
             SeriesPositionInfo(
-                series_id=bs.series.id,
+                id=bs.series.id,
+                provider_id=str(bs.series.hardcover_id) if bs.series.hardcover_id else None,
                 series_name=bs.series.name,
-                position=bs.position,
+                series_position=bs.position,
                 series_count=bs.series.books_count,
             )
             for bs in book.book_series
@@ -323,6 +326,148 @@ async def list_books(
     ]
 
     return [_book_summary(book) for book in books]
+
+
+def _normalize_isbn(isbn: str | None) -> str | None:
+    """Normalize ISBN by removing hyphens and spaces."""
+    if not isbn:
+        return None
+    return isbn.replace("-", "").replace(" ", "").strip()
+
+
+def _get_best_isbn(book: Book) -> str | None:
+    """Get the best ISBN for display (priority: hc_13 > hc_10 > google_13 > ...)."""
+    for isbn in [
+        book.hardcover_isbn_13,
+        book.hardcover_isbn_10,
+        book.google_isbn_13,
+        book.google_isbn_10,
+        book.ol_isbn_13,
+        book.ol_isbn_10,
+        book.isbn,
+    ]:
+        if isbn:
+            return isbn
+    return None
+
+
+def _get_all_isbns(book: Book) -> list[str]:
+    """Get all known ISBNs for a book, normalized."""
+    isbns = []
+    for isbn in [
+        book.hardcover_isbn_13,
+        book.hardcover_isbn_10,
+        book.google_isbn_13,
+        book.google_isbn_10,
+        book.ol_isbn_13,
+        book.ol_isbn_10,
+        book.isbn,
+        book.manual_isbn,
+    ]:
+        normalized = _normalize_isbn(isbn)
+        if normalized and normalized not in isbns:
+            isbns.append(normalized)
+    return isbns
+
+
+@router.get("/provider-match", response_model=ProviderMatchResponse)
+async def get_provider_match(
+    author_id: int | None = Query(None, description="Scope to author's books + co-authored"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return book data for matching search results to our DB.
+    
+    If author_id provided: Returns books where author_id matches OR author name in contributors.
+    If no author_id: Returns all books with hardcover_id (library-global fallback).
+    """
+    query = select(Book).options(
+        selectinload(Book.author),
+        selectinload(Book.files),
+        selectinload(Book.book_series).selectinload(BookSeries.series),
+    )
+    
+    if author_id:
+        # Get author name for contributors check
+        author_result = await db.execute(select(Author).where(Author.id == author_id))
+        author = author_result.scalar_one_or_none()
+        if author:
+            query = query.where(
+                or_(
+                    Book.author_id == author_id,
+                    Book.contributors.like(f'%"{author.name}"%'),
+                )
+            )
+        else:
+            # Author not found, return empty
+            return ProviderMatchResponse(
+                by_hardcover_id={},
+                by_google_id={},
+                by_isbn={},
+            )
+    else:
+        # Global fallback - all books with hardcover_id
+        query = query.where(Book.hardcover_id.isnot(None))
+    
+    result = await db.execute(query)
+    books = result.scalars().all()
+    
+    by_hardcover_id: dict[str, ProviderMatchEntry] = {}
+    by_google_id: dict[str, ProviderMatchEntry] = {}
+    by_isbn: dict[str, ProviderMatchEntry] = {}
+    
+    for book in books:
+        # Get primary series info
+        series_name = None
+        series_position = None
+        series_count = None
+        if book.book_series:
+            primary_bs = book.book_series[0]  # First series as primary
+            if primary_bs.series:
+                series_name = primary_bs.series.name
+                series_position = primary_bs.position
+                series_count = primary_bs.series.books_count
+        
+        # Get formats from files
+        formats = list(set(
+            f.file_format.lower()
+            for f in book.files
+            if f.file_format
+        )) if book.files else []
+        
+        entry = ProviderMatchEntry(
+            book_id=book.id,
+            hardcover_id=str(book.hardcover_id) if book.hardcover_id else None,
+            google_id=book.google_id,
+            title=book.title,
+            author_name=book.author.name if book.author else None,
+            description=book.description,
+            release_date=book.release_date,
+            rating=book.rating,
+            pages=book.pages,
+            isbn=_get_best_isbn(book),
+            all_isbns=_get_all_isbns(book),
+            is_owned=book.is_owned,
+            formats=formats,
+            cover_path=book.cover_image_cached_path if book.is_owned else None,
+            series_name=series_name,
+            series_position=series_position,
+            series_count=series_count,
+        )
+        
+        # Add to lookup dicts
+        if book.hardcover_id:
+            by_hardcover_id[str(book.hardcover_id)] = entry
+        if book.google_id:
+            by_google_id[book.google_id] = entry
+        for isbn in entry.all_isbns:
+            if isbn not in by_isbn:
+                by_isbn[isbn] = entry
+    
+    return ProviderMatchResponse(
+        by_hardcover_id=by_hardcover_id,
+        by_google_id=by_google_id,
+        by_isbn=by_isbn,
+    )
 
 
 @router.get("/hidden", response_model=list[HiddenBookSummary])
@@ -577,9 +722,10 @@ async def get_book(book_id: int, db: AsyncSession = Depends(get_db)):
 
     series_info = [
         SeriesPositionInfo(
-            series_id=bs.series.id,
+            id=bs.series.id,
+            provider_id=str(bs.series.hardcover_id) if bs.series.hardcover_id else None,
             series_name=bs.series.name,
-            position=bs.position,
+            series_position=bs.position,
             series_count=bs.series.books_count,
         )
         for bs in book.book_series

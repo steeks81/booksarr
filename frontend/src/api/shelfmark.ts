@@ -23,6 +23,7 @@ export interface ShelfmarkSearchResult {
   source_url: string | null;
   isbn: string | null;
   // Series info
+  series_id: string | null;  // Provider-specific series ID (e.g., HC series id)
   series_name: string | null;
   series_position: number | null;
   series_count: number | null;
@@ -46,7 +47,7 @@ export interface ShelfmarkConnectionResponse {
 
 export function useShelfmarkSearch() {
   return useMutation({
-    mutationFn: (body: { query?: string; media_type?: "ebook" | "audiobook"; series?: string; author?: string; title?: string }) =>
+    mutationFn: (body: { query?: string; media_type?: "ebook" | "audiobook"; series?: string; author?: string; title?: string; isbn?: string; author_hardcover_id?: number | null; series_hardcover_id?: number | null }) =>
       fetchApi<ShelfmarkSearchResponse>("/shelfmark/search", {
         method: "POST",
         body: JSON.stringify(body),
@@ -57,13 +58,16 @@ export function useShelfmarkSearch() {
 // --- Series Enrichment SSE API ---
 
 export interface SeriesEnrichEvent {
-  type: "progress" | "series" | "done";
+  type: "progress" | "series" | "done" | "error";
   current?: number;
   total?: number;
   book_id?: string;
   series_name?: string | null;
   series_position?: number | null;
   series_count?: number | null;
+  message?: string;  // Error message
+  errors?: number;   // Count of errors (in done event)
+  skipped?: number;  // Count of skipped books (in done event)
 }
 
 /**
@@ -149,6 +153,7 @@ export interface ShelfmarkBookInfo {
   provider: string | null;
   provider_id: string | null;
   // Series info
+  series_id: string | null;
   series_name: string | null;
   series_position: number | null;
 }
@@ -354,6 +359,58 @@ export interface SeriesPrefetchResponse {
   status: string;
   cache_hits: number;
   to_fetch: number;
+}
+
+// --- Background Series Enrichment API (single shared worker + polling) ---
+
+export interface EnrichSeriesStartResponse {
+  already_cached: number;
+  queued: number;
+  queue_size: number;
+}
+
+export interface EnrichSeriesSeriesInfo {
+  series_id: string | null;
+  series_name: string | null;
+  series_position: number | null;
+  series_count: number | null;
+  isbn: string | null;
+}
+
+export interface EnrichSeriesStatusResponse {
+  done: number;
+  total: number;
+  series: Record<string, EnrichSeriesSeriesInfo>;  // book_id -> series info (cached)
+  worker_running: boolean;
+  rate_limited: boolean;
+  message: string | null;
+}
+
+/**
+ * Queue books for background series enrichment (single shared worker).
+ * Returns immediately. New books are prepended (current search prioritized) and
+ * deduped against cache + queue. Poll getEnrichSeriesStatus() for progress.
+ */
+export async function startEnrichSeries(
+  books: Array<{ provider: string; book_id: string }>,
+): Promise<EnrichSeriesStartResponse> {
+  return fetchApi<EnrichSeriesStartResponse>("/shelfmark/search/enrich-series/start", {
+    method: "POST",
+    body: JSON.stringify({ books }),
+  });
+}
+
+/**
+ * Get enrichment status for a specific set of books (the current search).
+ * Returns which of those books are cached (with series data) + global worker state.
+ */
+export async function getEnrichSeriesStatus(
+  books: Array<{ provider: string; book_id: string }>,
+): Promise<EnrichSeriesStatusResponse> {
+  return fetchApi<EnrichSeriesStatusResponse>("/shelfmark/search/enrich-series/status", {
+    method: "POST",
+    body: JSON.stringify({ books }),
+  });
 }
 
 /**

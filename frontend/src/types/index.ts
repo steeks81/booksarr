@@ -90,10 +90,13 @@ export interface AuthorPortraitSearchResponse {
 }
 
 export interface SeriesPositionInfo {
-  series_id: number;
-  series_name: string;
-  position: number | null;
+  id: number | null;  // Internal BA series ID (for BA page links)
+  provider_id: string | null;  // Provider series ID (for SM cache/search)
+  series_name: string | null;
+  series_position: number | null;
   series_count?: number | null;
+  isbn?: string | null;
+  fetched_at?: string | null;
 }
 
 export interface LocalBookFile {

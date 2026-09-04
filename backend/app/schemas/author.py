@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel
 
 
@@ -181,10 +182,14 @@ class BookInAuthor(BaseModel):
 
 
 class SeriesPositionInfo(BaseModel):
-    series_id: int
-    series_name: str
-    position: float | None
-    series_count: int | None = None
+    """Series position info for a book - unified model for API and cache."""
+    id: int | None = None                     # Internal BA series ID (for BA page links)
+    provider_id: str | None = None            # Provider series ID (for SM cache/search, e.g., HC series id)
+    series_name: str | None = None            # Series name
+    series_position: float | None = None      # Position in series
+    series_count: int | None = None           # Total books in series
+    isbn: str | None = None                   # ISBN (from enrichment)
+    fetched_at: datetime | None = None        # Cache timestamp
 
 
 class SeriesInAuthor(BaseModel):

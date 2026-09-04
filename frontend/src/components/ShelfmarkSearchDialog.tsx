@@ -9,14 +9,14 @@ import {
   useShelfmarkCancel,
   useShelfmarkRetry,
   useShelfmarkDismiss,
-  useShelfmarkBookDetail,
-  enrichSeriesStream,
+  startEnrichSeries,
+  getEnrichSeriesStatus,
   type ShelfmarkSearchResult,
   type ShelfmarkBookInfo,
   type ShelfmarkRelease,
-  type ShelfmarkBookDetailResponse,
 } from "../api/shelfmark";
 import { useSettings } from "../api/settings";
+import { useProviderMatch, type ProviderMatchEntry } from "../api/books";
 
 // Strip HTML tags and convert paragraph breaks to newlines
 function stripHtml(html: string | null | undefined): string {
@@ -26,6 +26,11 @@ function stripHtml(html: string | null | undefined): string {
     .replace(/<br\s*\/?>/gi, "\n")      // Convert <br> to newline
     .replace(/<[^>]+>/g, "")            // Strip remaining HTML tags
     .trim();
+}
+
+// Normalize ISBN: strip hyphens and spaces, lowercase
+function normalizeIsbn(isbn: string): string {
+  return isbn.replace(/[-\s]/g, "").toLowerCase();
 }
 
 // Source display names (matching SM)
@@ -155,10 +160,23 @@ function getStatusProgress(status: string, progress: number): number {
   }
 }
 
+// Sanitize search result strings - trim whitespace from text fields
+function sanitizeResults(results: ShelfmarkSearchResult[]): ShelfmarkSearchResult[] {
+  return results.map(r => ({
+    ...r,
+    title: r.title?.trim() || r.title,
+    author: r.author?.trim() || r.author,
+    series_name: r.series_name?.trim() || r.series_name,
+  }));
+}
+
 export default function ShelfmarkSearchDialog({
   bookId,
   title,
   authorName,
+  authorId,
+  authorHardcoverId,
+  seriesHardcoverId,
   series,
   authorSearch,
   open,
@@ -167,26 +185,32 @@ export default function ShelfmarkSearchDialog({
   bookId: number | null;
   title: string;
   authorName: string | null;
+  authorId: number | null;
+  // Hardcover ids (from our DB). When known, search by id for the clean by-id
+  // catalog path (avoids the keyword-search 250 cap). Optional - falls back to
+  // name-based search when absent.
+  authorHardcoverId?: number | null;
+  seriesHardcoverId?: number | null;
   series?: string | null;
   authorSearch?: string | null;
   open: boolean;
   onClose: () => void;
 }) {
   const { data: settings } = useSettings();
+  const { data: providerMatchData } = useProviderMatch(authorId, open); // Fetch provider match data
   const searchMutation = useShelfmarkSearch();
   const releasesMutation = useShelfmarkReleases();
   const downloadMutation = useShelfmarkDownload();
   const cancelMutation = useShelfmarkCancel();
   const retryMutation = useShelfmarkRetry();
   const dismissMutation = useShelfmarkDismiss();
-  const bookDetailMutation = useShelfmarkBookDetail();
   
   // Poll for download status when in releases view
   const [pollStatus, setPollStatus] = useState(false);
   const { data: statusData } = useShelfmarkStatus(pollStatus, 2000);
 
   // Search state - separate query text per search field (like SM does)
-  const [searchField, setSearchField] = useState<"general" | "author" | "title" | "series">("general");
+  const [searchField, setSearchField] = useState<"general" | "author" | "title" | "series" | "isbn">("general");
   const [queryTextByField, setQueryTextByField] = useState<Record<string, string>>({
     general: "",
     author: "",
@@ -201,16 +225,25 @@ export default function ShelfmarkSearchDialog({
   const [shelfmarkUrl, setShelfmarkUrl] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
-  const [sortBy, setSortBy] = useState<"default" | "series" | "title" | "year">("default");
+  
+  // Persisted preferences (localStorage)
+  const [sortBy, setSortBy] = useState<"relevance" | "series" | "title" | "year">(() => {
+    const saved = localStorage.getItem("shelfmark-sortBy");
+    return (saved as "relevance" | "series" | "title" | "year") || "relevance";
+  });
+  const [includeOwned, setIncludeOwned] = useState(() => {
+    const saved = localStorage.getItem("shelfmark-includeOwned");
+    return saved === "true";
+  });
   
   // Track last executed search to avoid redundant requests
-  const [lastSearch, setLastSearch] = useState<{ field: string; query: string } | null>(null);
+  // Includes IDs so clicking different series/authors with same name triggers new search
+  const [lastSearch, setLastSearch] = useState<{ field: string; query: string; seriesId?: string | null; authorId?: number | null } | null>(null);
 
   // Releases view state
   const [view, setView] = useState<"search" | "info" | "releases">("search");
   const [selectedBook, setSelectedBook] = useState<ShelfmarkSearchResult | null>(null);
   const [bookInfo, setBookInfo] = useState<ShelfmarkBookInfo | null>(null);
-  const [bookDetailFull, setBookDetailFull] = useState<ShelfmarkBookDetailResponse | null>(null);
   const [releases, setReleases] = useState<ShelfmarkRelease[]>([]);
   const [sources, setSources] = useState<string[]>([]);
   const [activeSource, setActiveSource] = useState<string | null>(null);
@@ -231,44 +264,153 @@ export default function ShelfmarkSearchDialog({
   // Description expand state
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   
-  // Direct search option - bypasses SM's metadata lookup
-  const [directSearch, setDirectSearch] = useState(false);
+  // Manual query option - bypasses SM's metadata lookup for release search
+  const [manualQuery, setManualQuery] = useState(false);
   
-  // Info view loading state
-  const [detailLoading, setDetailLoading] = useState(false);
+  // Client-side text filter for results
+  const [filterText, setFilterText] = useState("");
+  
+  // Persist sortBy and includeOwned to localStorage
+  useEffect(() => {
+    localStorage.setItem("shelfmark-sortBy", sortBy);
+  }, [sortBy]);
+  
+  useEffect(() => {
+    localStorage.setItem("shelfmark-includeOwned", String(includeOwned));
+  }, [includeOwned]);
   
   // Series enrichment progress tracking
   const [seriesEnrichProgress, setSeriesEnrichProgress] = useState<{ current: number; total: number } | null>(null);
-  const enrichAbortRef = React.useRef<AbortController | null>(null);
+  const [seriesEnrichError, setSeriesEnrichError] = useState<string | null>(null);
+  // Books this search needs enriched (drives per-search polling). null = not enriching.
+  const [enrichBooks, setEnrichBooks] = useState<Array<{ provider: string; book_id: string }> | null>(null);
+  const enrichPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastEnrichUpdateRef = React.useRef<number>(0);  // Batch UI updates during enrichment
   
   // Series cache: provider:bookId -> series info (cleared on dialog close)
   const [seriesCache, setSeriesCache] = useState<Map<string, {
+    series_id: string | null;
     series_name: string | null;
     series_position: number | null;
     series_count: number | null;
+    isbn: string | null;
   }>>(new Map());
   
-  // Sorted results based on sortBy selection
+  // Get matched book from our DB via provider-match API
+  const getMatchedBook = (result: ShelfmarkSearchResult): ProviderMatchEntry | null => {
+    if (!providerMatchData) return null;
+    
+    // Match by provider-specific ID
+    if (result.provider === "hardcover" && result.id) {
+      const match = providerMatchData.by_hardcover_id[result.id];
+      if (match) return match;
+    }
+    if (result.provider === "googlebooks" && result.id) {
+      const match = providerMatchData.by_google_id[result.id];
+      if (match) return match;
+    }
+    
+    // Fallback: match by ISBN
+    if (result.isbn) {
+      const normalizedIsbn = normalizeIsbn(result.isbn);
+      const match = providerMatchData.by_isbn[normalizedIsbn];
+      if (match) return match;
+    }
+    
+    return null;
+  };
+  
+  // Check if a search result is owned (simple yes/no, for filtering)
+  const isOwned = (result: ShelfmarkSearchResult): boolean => {
+    const matched = getMatchedBook(result);
+    return matched?.is_owned ?? false;
+  };
+  
+  // Check if a search result is in our catalog but missing the file
+  const isInCatalogMissing = (result: ShelfmarkSearchResult): boolean => {
+    const matched = getMatchedBook(result);
+    return matched !== null && !matched.is_owned;
+  };
+  
+  // Sorted and filtered results based on filterText, sortBy, and includeOwned
   const sortedResults = useMemo(() => {
-    if (sortBy === "default") return results;
-    return [...results].sort((a, b) => {
+    let filtered = results;
+    
+    // Apply text filter (matches title, series, or author - case insensitive)
+    if (filterText.trim()) {
+      const searchLower = filterText.toLowerCase().trim();
+      filtered = filtered.filter(r => 
+        (r.title?.toLowerCase().includes(searchLower)) ||
+        (r.series_name?.toLowerCase().includes(searchLower)) ||
+        (r.author?.toLowerCase().includes(searchLower))
+      );
+    }
+    
+    // Filter out owned books unless includeOwned is checked
+    if (!includeOwned) {
+      filtered = filtered.filter(r => !isOwned(r));
+    }
+    
+    // Then sort
+    if (sortBy === "relevance") return filtered;
+    return [...filtered].sort((a, b) => {
+      // Helper for series comparison (empty series sorts last)
+      const compareSeries = (x: ShelfmarkSearchResult, y: ShelfmarkSearchResult) => {
+        const seriesX = x.series_name?.trim() || "\uffff";
+        const seriesY = y.series_name?.trim() || "\uffff";
+        if (seriesX !== seriesY) return seriesX.localeCompare(seriesY);
+        return (x.series_position ?? 999) - (y.series_position ?? 999);
+      };
+      
       switch (sortBy) {
-        case "series": {
-          // Treat empty string same as no series
-          const seriesA = a.series_name?.trim() || "\uffff";
-          const seriesB = b.series_name?.trim() || "\uffff";
-          if (seriesA !== seriesB) return seriesA.localeCompare(seriesB);
-          return (a.series_position ?? 999) - (b.series_position ?? 999);
+        case "series":
+          // series_name → series_position
+          return compareSeries(a, b);
+        case "title": {
+          // title → series_name → series_position
+          const titleCmp = (a.title || "").localeCompare(b.title || "");
+          if (titleCmp !== 0) return titleCmp;
+          return compareSeries(a, b);
         }
-        case "title":
+        case "year": {
+          // year (newest first) → series_name → series_position → title
+          const yearCmp = (b.year ?? 0) - (a.year ?? 0);
+          if (yearCmp !== 0) return yearCmp;
+          const seriesCmp = compareSeries(a, b);
+          if (seriesCmp !== 0) return seriesCmp;
           return (a.title || "").localeCompare(b.title || "");
-        case "year":
-          return (b.year ?? 0) - (a.year ?? 0); // Newest first
+        }
         default:
           return 0;
       }
     });
-  }, [results, sortBy]);
+  }, [results, filterText, sortBy, includeOwned, providerMatchData]);
+  
+  // Get owned book cover for a search result (from provider-match data)
+  const getOwnedCover = (result: ShelfmarkSearchResult): string | null => {
+    const matched = getMatchedBook(result);
+    if (matched?.cover_path) {
+      return `/api/images/${matched.cover_path.replace("cache/", "")}`;
+    }
+    return null;
+  };
+  
+  // Format badge styling (matches BookTable.tsx)
+  const FORMAT_BADGE_STYLES: Record<string, { label: string; className: string }> = {
+    epub: { label: "EPUB", className: "bg-emerald-500/15 text-emerald-300" },
+    mobi: { label: "MOBI", className: "bg-blue-500/15 text-blue-300" },
+    pdf: { label: "PDF", className: "bg-amber-500/15 text-amber-300" },
+    audiobook: { label: "AUDIO", className: "bg-purple-500/15 text-purple-300" },
+  };
+  
+  // Get owned formats for a search result (from provider-match data)
+  const getOwnedFormats = (result: ShelfmarkSearchResult): string[] | null => {
+    const matched = getMatchedBook(result);
+    if (matched && matched.formats.length > 0) {
+      return matched.formats;
+    }
+    return null;
+  };
   
   // Update completed status from polling data
   useEffect(() => {
@@ -317,9 +459,8 @@ export default function ShelfmarkSearchDialog({
   useEffect(() => {
     if (!open) {
       setPollStatus(false);
-      // Cancel any in-progress series enrichment
-      enrichAbortRef.current?.abort();
-      enrichAbortRef.current = null;
+      // Stop this dialog's enrichment polling (background worker keeps running)
+      setEnrichBooks(null);
       // Clear series cache on close
       setSeriesCache(new Map());
       return;
@@ -343,8 +484,12 @@ export default function ShelfmarkSearchDialog({
     // Prefill query texts for all known fields (helps user switch between search types)
     // When opening for series search, also prefill author if known
     // When opening for book (title) search, prefill author and series if known
+    // General field: author + series for series search, author + title otherwise
+    const generalPrefill = initialField === "series"
+      ? [authorSearch || authorName || "", series || ""].filter(Boolean).join(" ").trim()
+      : [authorSearch || authorName || "", title].filter(Boolean).join(" ").trim();
     setQueryTextByField({
-      general: [authorSearch || authorName || "", title].filter(Boolean).join(" ").trim(),
+      general: generalPrefill,
       author: authorSearch || authorName || "",
       title: title || "",
       series: series || "",
@@ -357,7 +502,6 @@ export default function ShelfmarkSearchDialog({
     setView("search");
     setSelectedBook(null);
     setBookInfo(null);
-    setBookDetailFull(null);
     setReleases([]);
     setSources([]);
     setActiveSource(null);
@@ -370,24 +514,28 @@ export default function ShelfmarkSearchDialog({
     setCompletedIds(new Set());
     setCancelledIds(new Set());
     setDescriptionExpanded(false);
-    setDirectSearch(false);
-    setDetailLoading(false);
+    setManualQuery(false);
     setPollStatus(false);
     setSeriesEnrichProgress(null);
-    // Note: sortBy intentionally not reset - preserve user's preference
+    setSeriesEnrichError(null);
+    // Don't reset sortBy or includeOwned - they persist via localStorage
+    setFilterText("");
     
     // Auto-search when opened with author, series, or title
     if (authorSearch || series || title) {
       const doAutoSearch = async () => {
         try {
-          const searchParams: { series?: string; author?: string; title?: string; query?: string; media_type: "ebook" | "audiobook" } = {
+          const searchParams: { series?: string; author?: string; title?: string; isbn?: string; query?: string; media_type: "ebook" | "audiobook"; author_hardcover_id?: number | null; series_hardcover_id?: number | null } = {
             media_type: "ebook",
           };
           
           if (initialField === "author") {
             searchParams.author = authorSearch || authorName || "";
+            // Prefer id-based search when we know the author's Hardcover id
+            if (authorHardcoverId != null) searchParams.author_hardcover_id = authorHardcoverId;
           } else if (initialField === "series") {
             searchParams.series = series || "";
+            if (seriesHardcoverId != null) searchParams.series_hardcover_id = seriesHardcoverId;
             // Don't filter by author for series search - series name is specific enough
             // and author filter causes issues with co-authored books
           } else if (initialField === "title") {
@@ -398,13 +546,21 @@ export default function ShelfmarkSearchDialog({
           
           const response = await searchMutation.mutateAsync(searchParams);
 
-          if (response.error) {
+          if (response.error && response.results.length === 0) {
+            // Hard error - no results at all
             setSearchError(response.error);
             setResults([]);
           } else {
-            setResults(response.results);
+            // Success, or soft warning with partial results
+            setResults(sanitizeResults(response.results));
             setShelfmarkUrl(response.shelfmark_url);
-            setLastSearch({ field: initialField, query: searchParams.title || searchParams.author || searchParams.series || searchParams.query || "" });
+            setSearchError(response.error || null);  // Show warning if present
+            setLastSearch({ 
+              field: initialField, 
+              query: searchParams.title || searchParams.author || searchParams.series || searchParams.query || "",
+              ...(initialField === "series" && seriesHardcoverId != null ? { seriesId: String(seriesHardcoverId) } : {}),
+              ...(initialField === "author" && authorHardcoverId != null ? { authorId: authorHardcoverId } : {}),
+            });
             // Series enrichment will be triggered by a separate useEffect when results change
           }
         } catch (err) {
@@ -419,12 +575,14 @@ export default function ShelfmarkSearchDialog({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Start series enrichment when results are loaded
+  // Start series enrichment when results are loaded.
+  // Applies any locally-cached series immediately, queues the rest with the shared
+  // backend worker, and sets enrichBooks to kick off per-search polling.
   useEffect(() => {
-    if (!hasSearched || results.length === 0 || seriesEnrichProgress !== null) return;
+    if (!hasSearched || results.length === 0 || enrichBooks !== null) return;
     
-    // First, apply cached series data to results
-    const resultsNeedingUpdate: Array<{ id: string; series_name: string | null; series_position: number | null; series_count: number | null }> = [];
+    // First, apply locally-cached series data to results
+    const resultsNeedingUpdate: Array<{ id: string; series_id: string | null; series_name: string | null; series_position: number | null; series_count: number | null; isbn: string | null }> = [];
     const booksNeedingFetch: Array<{ provider: string; book_id: string }> = [];
     
     for (const r of results) {
@@ -434,20 +592,19 @@ export default function ShelfmarkSearchDialog({
       const cached = seriesCache.get(cacheKey);
       
       if (cached) {
-        // Use cached data
         resultsNeedingUpdate.push({
           id: r.id,
+          series_id: cached.series_id,
           series_name: cached.series_name,
           series_position: cached.series_position,
           series_count: cached.series_count,
+          isbn: cached.isbn,
         });
       } else {
-        // Need to fetch
         booksNeedingFetch.push({ provider: r.provider, book_id: r.id });
       }
     }
     
-    // Apply cached data immediately
     if (resultsNeedingUpdate.length > 0) {
       setResults(prev => prev.map(r => {
         const update = resultsNeedingUpdate.find(u => u.id === r.id);
@@ -455,101 +612,111 @@ export default function ShelfmarkSearchDialog({
       }));
     }
     
-    // If nothing to fetch, we're done
     if (booksNeedingFetch.length === 0) return;
     
-    // Create abort controller for this enrichment run
-    const abortController = new AbortController();
-    enrichAbortRef.current = abortController;
+    // Set enrichBooks synchronously so this effect's guard (enrichBooks !== null)
+    // trips immediately and can't double-fire before the async queue call returns.
+    // This also drives the per-search polling effect below.
+    setSeriesEnrichProgress({ current: 0, total: booksNeedingFetch.length });
+    setSeriesEnrichError(null);
+    setEnrichBooks(booksNeedingFetch);
     
-    // Start enrichment for uncached books only
-    const doEnrich = async () => {
-      setSeriesEnrichProgress({ current: 0, total: booksNeedingFetch.length });
-      
-      try {
-        for await (const event of enrichSeriesStream(booksNeedingFetch, abortController.signal)) {
-          if (abortController.signal.aborted) break;
-          
-          if (event.type === "progress") {
-            setSeriesEnrichProgress({ current: event.current!, total: event.total! });
-          } else if (event.type === "series" && event.book_id) {
-            // Find the provider for this book to build cache key
-            const bookEntry = booksNeedingFetch.find(b => b.book_id === event.book_id);
-            if (bookEntry) {
-              const cacheKey = `${bookEntry.provider}:${event.book_id}`;
-              // Update cache
-              setSeriesCache(prev => new Map(prev).set(cacheKey, {
-                series_name: event.series_name ?? null,
-                series_position: event.series_position ?? null,
-                series_count: event.series_count ?? null,
-              }));
-            }
-            
-            // Update the specific result with series info
-            setResults(prev => prev.map(r => 
-              r.id === event.book_id
-                ? {
-                    ...r,
-                    series_name: event.series_name ?? null,
-                    series_position: event.series_position ?? null,
-                    series_count: event.series_count ?? null,
-                  }
-                : r
-            ));
-          } else if (event.type === "done") {
-            setSeriesEnrichProgress(null);
-          }
-        }
-      } catch (err) {
-        // Ignore abort errors (can be Error with name "AbortError" or DOMException)
-        if (err instanceof Error && (err.name === "AbortError" || err.message.includes("aborted"))) return;
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        console.error("Series enrichment error:", err);
-      } finally {
-        setSeriesEnrichProgress(null);
-        if (enrichAbortRef.current === abortController) {
-          enrichAbortRef.current = null;
-        }
-      }
-    };
-    
-    doEnrich();
+    // Queue with the shared backend worker (fire-and-forget; polling handles the rest).
+    startEnrichSeries(booksNeedingFetch).catch(err => {
+      // Even if queueing fails, polling still runs - the books may already be queued
+      // (e.g. from a prior search / browser refresh with a run still going).
+      console.error("Series enrichment queue error:", err);
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasSearched, results.length]);
-
-  // Fetch full book details when info view opens
+  
+  // Per-search polling: query status for THIS search's books, apply cached series
+  // to the table as they land, compute X/Y, stop when all done (or worker idle).
   useEffect(() => {
-    if (view !== "info" || !selectedBook) {
-      return;
-    }
+    if (!enrichBooks || enrichBooks.length === 0) return;
     
-    // Determine provider from source
-    let provider = "hardcover"; // default
-    const src = (selectedBook.source || "").toLowerCase();
-    if (src.includes("google")) provider = "googlebooks";
-    else if (src.includes("hardcover")) provider = "hardcover";
-    else if (src.includes("openlibrary") || src.includes("open library")) provider = "openlibrary";
+    let cancelled = false;
     
-    const fetchDetails = async () => {
-      setDetailLoading(true);
-      setBookDetailFull(null);
+    const poll = async () => {
       try {
-        const response = await bookDetailMutation.mutateAsync({
-          provider,
-          bookId: selectedBook.id,
-        });
-        setBookDetailFull(response);
+        const status = await getEnrichSeriesStatus(enrichBooks);
+        if (cancelled) return;
+        
+        // Apply any newly-cached series to the results table + local cache.
+        const seriesEntries = Object.entries(status.series);
+        if (seriesEntries.length > 0) {
+          // Always update cache first (tracks what we've seen from backend)
+          setSeriesCache(prev => {
+            const next = new Map(prev);
+            for (const [bookId, info] of seriesEntries) {
+              const book = enrichBooks.find(b => b.book_id === bookId);
+              if (book) next.set(`${book.provider}:${bookId}`, info);
+            }
+            return next;
+          });
+          
+          // Batch UI updates: only apply to results every 3 seconds
+          // Reduces re-renders while enrichment runs. P1-F11-S3 (paging) will fix this properly.
+          const now = Date.now();
+          if (!lastEnrichUpdateRef.current) lastEnrichUpdateRef.current = 0;
+          const shouldUpdate = now - lastEnrichUpdateRef.current > 3000 || status.done >= status.total;
+          
+          if (shouldUpdate) {
+            lastEnrichUpdateRef.current = now;
+            setResults(prev => prev.map(r => {
+              const info = status.series[r.id];
+              if (info && r.series_position === null) {
+                return { ...r, ...info };
+              }
+              return r;
+            }));
+          }
+        }
+        
+        // Progress = how many of MY books are done.
+        setSeriesEnrichProgress({ current: status.done, total: status.total });
+        
+        // Rate-limit state is global (shared worker) - show it while ours aren't done.
+        if (status.rate_limited && status.message) {
+          setSeriesEnrichError(status.message);
+        } else {
+          setSeriesEnrichError(null);
+        }
+        
+        // Done when all my books are cached, OR the worker is idle and can't
+        // make more progress on them (e.g. paused on rate limit / genuine misses).
+        if (status.done >= status.total || !status.worker_running) {
+          if (cancelled) return;
+          if (enrichPollRef.current) {
+            clearInterval(enrichPollRef.current);
+            enrichPollRef.current = null;
+          }
+          setEnrichBooks(null);
+          setSeriesEnrichProgress(null);
+          setSeriesEnrichError(null);
+        }
       } catch (err) {
-        console.error("Failed to fetch book details:", err);
-        // Keep showing basic info from search result
-      } finally {
-        setDetailLoading(false);
+        console.error("Series enrichment poll error:", err);
       }
     };
     
-    fetchDetails();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, selectedBook?.id]); // Only re-run when view or selectedBook.id changes
+    // Poll immediately, then on interval.
+    poll();
+    enrichPollRef.current = setInterval(poll, 1500);
+    
+    return () => {
+      cancelled = true;
+      if (enrichPollRef.current) {
+        clearInterval(enrichPollRef.current);
+        enrichPollRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enrichBooks]);
+
+  // Note: We no longer fetch book details on info view open.
+  // Info view now uses search result data + provider-match (our DB) data.
+  // This eliminates the external get_book call that was causing delay.
 
   if (!open) return null;
 
@@ -558,41 +725,60 @@ export default function ShelfmarkSearchDialog({
   const handleSearch = async () => {
     if (!queryText.trim()) return;
 
-    // Cancel any in-progress series enrichment
-    enrichAbortRef.current?.abort();
-    enrichAbortRef.current = null;
+    // Stop this search's enrichment polling; the new search starts its own
+    setEnrichBooks(null);
     
     setSearchError(null);
     setHasSearched(false);  // Reset to trigger series enrichment useEffect
     setSeriesEnrichProgress(null);
+    setSeriesEnrichError(null);
+    
+    // Don't reset sortBy - it persists via localStorage
+    setFilterText("");
 
     try {
-      const searchParams: { series?: string; author?: string; title?: string; query?: string; media_type: "ebook" | "audiobook" } = {
+      const searchParams: { series?: string; author?: string; title?: string; isbn?: string; query?: string; media_type: "ebook" | "audiobook"; author_hardcover_id?: number | null; series_hardcover_id?: number | null } = {
         media_type: "ebook",
       };
       
-      // Build search params based on searchField
+      const typed = queryText.trim();
+      // Build search params based on searchField.
+      // Only attach a Hardcover id when the typed text still matches the known
+      // name for that field - if the user edited it to a different name, the id
+      // would be stale, so fall back to name search.
       if (searchField === "author") {
-        searchParams.author = queryText.trim();
+        searchParams.author = typed;
+        if (authorHardcoverId != null && typed === (authorSearch || authorName || "").trim()) {
+          searchParams.author_hardcover_id = authorHardcoverId;
+        }
       } else if (searchField === "series") {
-        searchParams.series = queryText.trim();
+        searchParams.series = typed;
+        if (seriesHardcoverId != null && typed === (series || "").trim()) {
+          searchParams.series_hardcover_id = seriesHardcoverId;
+        }
       } else if (searchField === "title") {
-        searchParams.title = queryText.trim();
+        searchParams.title = typed;
+      } else if (searchField === "isbn") {
+        searchParams.isbn = typed;
       } else {
         // "general" - use query param
-        searchParams.query = queryText.trim();
+        searchParams.query = typed;
       }
       
       const response = await searchMutation.mutateAsync(searchParams);
 
-      if (response.error) {
+      if (response.error && response.results.length === 0) {
+        // Hard error - no results at all
         setSearchError(response.error);
         setResults([]);
         setHasSearched(true);
       } else {
-        setResults(response.results);
+        // Success, or soft warning with partial results
+        setResults(sanitizeResults(response.results));
         setShelfmarkUrl(response.shelfmark_url);
+        setSearchError(response.error || null);  // Show warning if present
         setHasSearched(true);  // This triggers series enrichment useEffect
+        setLastSearch({ field: searchField, query: typed });
       }
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : "Search failed");
@@ -603,28 +789,26 @@ export default function ShelfmarkSearchDialog({
 
   // Handle clicking a series name to search for that series
   // Also prefills author field if author is known
-  const handleSeriesClick = async (seriesNameToSearch: string, authorName?: string | null) => {
+  const handleSeriesClick = async (seriesNameToSearch: string, authorName?: string | null, seriesId?: string | null) => {
     // If already viewing this series search, just go back to results
     if (searchField === "series" && queryText === seriesNameToSearch && view !== "search") {
       handleBackToSearch();
       return;
     }
     
-    // Skip search if same as last executed search
-    if (lastSearch?.field === "series" && lastSearch?.query === seriesNameToSearch && hasSearched) {
+    // Skip search if same as last executed search (including series ID)
+    if (lastSearch?.field === "series" && lastSearch?.query === seriesNameToSearch && lastSearch?.seriesId === seriesId && hasSearched) {
       setSearchField("series");
       setView("search");
       return;
     }
     
-    // Cancel any in-progress series enrichment
-    enrichAbortRef.current?.abort();
-    enrichAbortRef.current = null;
+    // Stop this search's enrichment polling; the new search starts its own
+    setEnrichBooks(null);
     
     // Clear releases/info state
     setSelectedBook(null);
     setBookInfo(null);
-    setBookDetailFull(null);
     setReleases([]);
     setSources([]);
     setActiveSource(null);
@@ -635,6 +819,7 @@ export default function ShelfmarkSearchDialog({
     // Update state to search by series
     // Also prefill author field if known (helps user switch back to author search)
     setSearchField("series");
+    setFilterText("");
     setQueryTextByField(prev => ({
       ...prev,
       series: seriesNameToSearch,
@@ -643,23 +828,30 @@ export default function ShelfmarkSearchDialog({
     setSearchError(null);
     setHasSearched(false);
     setSeriesEnrichProgress(null);
+    setSeriesEnrichError(null);
     setView("search");
     
     try {
+      // Use series_hardcover_id when available for exact by-id search
+      const seriesHcId = seriesId ? parseInt(seriesId, 10) : null;
       const response = await searchMutation.mutateAsync({
         series: seriesNameToSearch,
         media_type: "ebook",
+        ...(seriesHcId && !isNaN(seriesHcId) ? { series_hardcover_id: seriesHcId } : {}),
       });
 
-      if (response.error) {
+      if (response.error && response.results.length === 0) {
+        // Hard error - no results at all
         setSearchError(response.error);
         setResults([]);
         setHasSearched(true);
       } else {
-        setResults(response.results);
+        // Success, or soft warning with partial results
+        setResults(sanitizeResults(response.results));
         setShelfmarkUrl(response.shelfmark_url);
+        setSearchError(response.error || null);  // Show warning if present
         setHasSearched(true);
-        setLastSearch({ field: "series", query: seriesNameToSearch });
+        setLastSearch({ field: "series", query: seriesNameToSearch, seriesId: seriesId });
       }
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : "Search failed");
@@ -684,14 +876,12 @@ export default function ShelfmarkSearchDialog({
       return;
     }
     
-    // Cancel any in-progress series enrichment
-    enrichAbortRef.current?.abort();
-    enrichAbortRef.current = null;
+    // Stop this search's enrichment polling; the new search starts its own
+    setEnrichBooks(null);
     
     // Clear releases/info state
     setSelectedBook(null);
     setBookInfo(null);
-    setBookDetailFull(null);
     setReleases([]);
     setSources([]);
     setActiveSource(null);
@@ -702,6 +892,7 @@ export default function ShelfmarkSearchDialog({
     // Update state to search by author
     // Also prefill title and series fields if known
     setSearchField("author");
+    setFilterText("");
     setQueryTextByField(prev => ({
       ...prev,
       author: authorToSearch,
@@ -711,6 +902,7 @@ export default function ShelfmarkSearchDialog({
     setSearchError(null);
     setHasSearched(false);
     setSeriesEnrichProgress(null);
+    setSeriesEnrichError(null);
     setView("search");
     
     try {
@@ -719,13 +911,16 @@ export default function ShelfmarkSearchDialog({
         media_type: "ebook",
       });
 
-      if (response.error) {
+      if (response.error && response.results.length === 0) {
+        // Hard error - no results at all
         setSearchError(response.error);
         setResults([]);
         setHasSearched(true);
       } else {
-        setResults(response.results);
+        // Success, or soft warning with partial results
+        setResults(sanitizeResults(response.results));
         setShelfmarkUrl(response.shelfmark_url);
+        setSearchError(response.error || null);  // Show warning if present
         setHasSearched(true);
         setLastSearch({ field: "author", query: authorToSearch });
       }
@@ -752,14 +947,12 @@ export default function ShelfmarkSearchDialog({
       return;
     }
     
-    // Cancel any in-progress series enrichment
-    enrichAbortRef.current?.abort();
-    enrichAbortRef.current = null;
+    // Stop this search's enrichment polling; the new search starts its own
+    setEnrichBooks(null);
     
     // Clear releases/info state
     setSelectedBook(null);
     setBookInfo(null);
-    setBookDetailFull(null);
     setReleases([]);
     setSources([]);
     setActiveSource(null);
@@ -770,6 +963,7 @@ export default function ShelfmarkSearchDialog({
     // Update state to search by title
     // Also prefill author and series fields if known
     setSearchField("title");
+    setFilterText("");
     setQueryTextByField(prev => ({
       ...prev,
       title: titleToSearch,
@@ -779,6 +973,7 @@ export default function ShelfmarkSearchDialog({
     setSearchError(null);
     setHasSearched(false);
     setSeriesEnrichProgress(null);
+    setSeriesEnrichError(null);
     setView("search");
     
     try {
@@ -787,13 +982,16 @@ export default function ShelfmarkSearchDialog({
         media_type: "ebook",
       });
 
-      if (response.error) {
+      if (response.error && response.results.length === 0) {
+        // Hard error - no results at all
         setSearchError(response.error);
         setResults([]);
         setHasSearched(true);
       } else {
-        setResults(response.results);
+        // Success, or soft warning with partial results
+        setResults(sanitizeResults(response.results));
         setShelfmarkUrl(response.shelfmark_url);
+        setSearchError(response.error || null);  // Show warning if present
         setHasSearched(true);
         setLastSearch({ field: "title", query: titleToSearch });
       }
@@ -816,7 +1014,6 @@ export default function ShelfmarkSearchDialog({
     setActiveSource(null);
     setDownloadSuccess(null);
     setDownloadError(null);
-    setBookDetailFull(null);
 
     // Determine provider from source display name
     let provider = "googlebooks"; // default
@@ -825,14 +1022,11 @@ export default function ShelfmarkSearchDialog({
     else if (src.includes("hardcover")) provider = "hardcover";
     else if (src.includes("openlibrary") || src.includes("open library")) provider = "openlibrary";
 
-    // Fetch book details immediately (in parallel with releases)
-    // This gives us description, series info etc. before releases finish loading
-    bookDetailMutation.mutateAsync({ provider, bookId: result.id })
-      .then(detail => setBookDetailFull(detail))
-      .catch(err => console.error("Failed to fetch book details:", err));
+    // Note: We no longer fetch book details in parallel with releases.
+    // Info view uses search result data + provider-match (our DB) data.
 
-    // Build manual query from search text (what user typed)
-    const manualQuery = queryText.trim();
+    // Build manual query text from search text (what user typed)
+    const manualQueryText = queryText.trim();
 
     try {
       // Build request params
@@ -841,9 +1035,9 @@ export default function ShelfmarkSearchDialog({
         book_id: result.id,
       };
       
-      // If direct search is enabled, pass manual_query to override SM's metadata-based search
-      if (directSearch && manualQuery) {
-        requestParams.manual_query = manualQuery;
+      // If manual query is enabled, pass manual_query to override SM's metadata-based search
+      if (manualQuery && manualQueryText) {
+        requestParams.manual_query = manualQueryText;
       }
       
       let response = await releasesMutation.mutateAsync(requestParams);
@@ -851,13 +1045,13 @@ export default function ShelfmarkSearchDialog({
       // Preserve book info from first response (has correct metadata)
       const firstBookInfo = response.book;
 
-      // Auto-retry with manual_query if no results and not already using direct search
-      if (!directSearch && !response.error && response.releases.length === 0 && manualQuery) {
+      // Auto-retry with manual_query if no results and manual query not already enabled
+      if (!manualQuery && !response.error && response.releases.length === 0 && manualQueryText) {
         // Retry with manual query
         response = await releasesMutation.mutateAsync({
           provider,
           book_id: result.id,
-          manual_query: manualQuery,
+          manual_query: manualQueryText,
         });
       }
 
@@ -883,7 +1077,6 @@ export default function ShelfmarkSearchDialog({
     setView("search");
     setSelectedBook(null);
     setBookInfo(null);
-    setBookDetailFull(null);
     setReleases([]);
     setSources([]);
     setActiveSource(null);
@@ -997,7 +1190,9 @@ export default function ShelfmarkSearchDialog({
               </>
             ) : (
               <>
-                <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Find Releases</div>
+                <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  {view === "info" ? "Book Info" : "Find Releases"}
+                </div>
                 <button
                   type="button"
                   onClick={() => handleTitleClick(
@@ -1083,6 +1278,7 @@ export default function ShelfmarkSearchDialog({
                     <option value="author">Author</option>
                     <option value="title">Title</option>
                     <option value="series">Series</option>
+                    <option value="isbn">ISBN</option>
                   </select>
                   <input
                     value={queryText}
@@ -1097,25 +1293,28 @@ export default function ShelfmarkSearchDialog({
                       searchField === "author" ? "Author name..." :
                       searchField === "title" ? "Book title..." :
                       searchField === "series" ? "Series name..." :
+                      searchField === "isbn" ? "ISBN (10 or 13 digits)..." :
                       "Author Name Book Title"
                     }
                   />
                 </div>
-                <div className="mt-2 flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="directSearch"
-                    checked={directSearch}
-                    onChange={(e) => setDirectSearch(e.target.checked)}
-                    className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-emerald-600 focus:ring-emerald-500"
-                  />
-                  <label
-                    htmlFor="directSearch"
-                    className="text-xs text-slate-400 cursor-pointer"
-                    title="Overrides metadata-based search with search query"
-                  >
-                    Direct search
-                  </label>
+                <div className="mt-2 flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="manualQuery"
+                      checked={manualQuery}
+                      onChange={(e) => setManualQuery(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <label
+                      htmlFor="manualQuery"
+                      className="text-xs text-slate-400 cursor-pointer"
+                      title="Skip metadata lookup - use your search query directly when finding releases"
+                    >
+                      Manual query
+                    </label>
+                  </div>
                 </div>
                 <div className="mt-3 flex items-center gap-3">
                   <button
@@ -1138,10 +1337,14 @@ export default function ShelfmarkSearchDialog({
                 </div>
               </div>
 
-              {/* Error message */}
+              {/* Error/warning message */}
               {searchError && (
-                <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4">
-                  <div className="text-sm text-rose-300">{searchError}</div>
+                <div className={`mt-4 rounded-xl border p-4 ${
+                  results.length > 0 
+                    ? "border-amber-500/30 bg-amber-500/10" 
+                    : "border-rose-500/30 bg-rose-500/10"
+                }`}>
+                  <div className={`text-sm ${results.length > 0 ? "text-amber-300" : "text-rose-300"}`}>{searchError}</div>
                 </div>
               )}
 
@@ -1154,35 +1357,69 @@ export default function ShelfmarkSearchDialog({
               )}
 
               {/* Results */}
-              {hasSearched && !searchMutation.isPending && !searchError && (
+              {hasSearched && !searchMutation.isPending && (searchError ? results.length > 0 : true) && (
                 <div className="mt-5 rounded-xl border border-slate-700 bg-slate-800 p-4">
                   <div className="mb-3 flex items-center justify-between">
-                    <div className="text-sm font-medium text-slate-100">Results</div>
+                    {/* Left: Filter, Sort, Include owned */}
                     <div className="flex items-center gap-3">
                       {results.length > 0 && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs text-slate-500">Sort:</span>
-                          <select
-                            value={sortBy}
-                            onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-                            className="rounded border border-slate-600 bg-slate-700 px-2 py-0.5 text-xs text-slate-200 focus:border-emerald-500 focus:outline-none"
-                          >
-                            <option value="default">Default</option>
-                            <option value="series">Series</option>
-                            <option value="title">Title</option>
-                            <option value="year">Year</option>
-                          </select>
-                        </div>
+                        <>
+                          {/* Text filter input */}
+                          <input
+                            type="text"
+                            value={filterText}
+                            onChange={(e) => setFilterText(e.target.value)}
+                            placeholder="Filter results..."
+                            className="w-64 rounded-lg border border-slate-600 bg-slate-700 px-3 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                          />
+                          {/* Sort dropdown */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-slate-500">Sort:</span>
+                            <select
+                              value={sortBy}
+                              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                              className="rounded border border-slate-600 bg-slate-700 px-2 py-0.5 text-xs text-slate-200 focus:border-emerald-500 focus:outline-none"
+                            >
+                              <option value="relevance">Relevance</option>
+                              <option value="series">Series</option>
+                              <option value="title">Title</option>
+                              <option value="year">Year</option>
+                            </select>
+                          </div>
+                          {/* Include owned checkbox */}
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="checkbox"
+                              id="includeOwned"
+                              checked={includeOwned}
+                              onChange={(e) => setIncludeOwned(e.target.checked)}
+                              className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-700 text-emerald-600 focus:ring-emerald-500"
+                            />
+                            <label
+                              htmlFor="includeOwned"
+                              className="text-xs text-slate-500 cursor-pointer"
+                              title="Show books you already own in results"
+                            >
+                              Include owned
+                            </label>
+                          </div>
+                        </>
                       )}
-                      <div className="flex items-center gap-2 text-xs text-slate-500">
-                        {seriesEnrichProgress && (
-                          <span className="flex items-center gap-1.5 text-emerald-400">
-                            <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-                            Caching {seriesEnrichProgress.current}/{seriesEnrichProgress.total}
-                          </span>
-                        )}
-                        <span>{results.length} result{results.length !== 1 ? "s" : ""}</span>
-                      </div>
+                    </div>
+                    {/* Right: Caching indicator, Result count */}
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      {seriesEnrichProgress && (
+                        <span
+                          className={`flex items-center gap-1.5 ${seriesEnrichError ? "text-red-400" : "text-emerald-400"}`}
+                          title={seriesEnrichError ?? undefined}
+                        >
+                          <span className={`h-2 w-2 rounded-full ${seriesEnrichError ? "bg-red-500" : "animate-pulse bg-emerald-500"}`} />
+                          Caching {seriesEnrichProgress.current}/{seriesEnrichProgress.total}
+                        </span>
+                      )}
+                      <span>
+                        {sortedResults.length} of {results.length} result{results.length !== 1 ? "s" : ""}
+                      </span>
                     </div>
                   </div>
 
@@ -1194,37 +1431,63 @@ export default function ShelfmarkSearchDialog({
                     <div className="divide-y divide-slate-700 rounded-lg border border-slate-700 bg-slate-900/40">
                       {sortedResults.map((result, index) => (
                         <div
-                          key={result.id || index}
+                          key={`${result.id}-${index}`}
                           className="flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-slate-800/60"
                         >
-                          {/* Cover image with series position badge - clickable */}
-                          <button
-                            type="button"
-                            onClick={() => handleResultClick(result)}
-                            className="relative shrink-0"
-                          >
-                            {result.cover_url ? (
-                              <img
-                                src={result.cover_url}
-                                alt=""
-                                className="h-16 w-12 rounded border border-slate-600 object-cover bg-slate-800"
-                                loading="lazy"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = "none";
-                                  e.currentTarget.nextElementSibling?.classList.remove("hidden");
-                                }}
-                              />
-                            ) : null}
-                            <div className={`flex h-16 w-12 items-center justify-center rounded border border-slate-600 bg-slate-800 text-[10px] text-slate-500 ${result.cover_url ? "hidden" : ""}`}>
-                              No cover
-                            </div>
-                            {/* Series position badge */}
-                            {result.series_position && (
-                              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-600 px-1 text-[10px] font-bold text-white">
-                                #{result.series_position}
-                              </span>
+                          {/* Cover with position badge above (like SeriesGroup) and owned tick inside */}
+                          <div className="relative shrink-0">
+                            {/* Series position badge - above image (like SeriesGroup) */}
+                            {result.series_position != null && (
+                              <div className="absolute -top-2 -left-1.5 z-10 flex h-4 min-w-4 items-center justify-center rounded-full bg-slate-700 border border-slate-600 px-1 text-[9px] font-bold text-slate-300">
+                                {result.series_position}
+                              </div>
                             )}
-                          </button>
+                            <button
+                              type="button"
+                              onClick={() => handleResultClick(result)}
+                              className="relative"
+                            >
+                              {(() => {
+                                // Prefer our owned cover, fall back to search result cover
+                                const coverUrl = getOwnedCover(result) || result.cover_url;
+                                return coverUrl ? (
+                                  <img
+                                    src={coverUrl}
+                                    alt=""
+                                    className="h-16 w-12 rounded border border-slate-600 object-cover bg-slate-800"
+                                    loading="lazy"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = "none";
+                                      e.currentTarget.nextElementSibling?.classList.remove("hidden");
+                                    }}
+                                  />
+                                ) : null;
+                              })()}
+                              <div className={`flex h-16 w-12 items-center justify-center rounded border border-slate-600 bg-slate-800 text-[10px] text-slate-500 ${(getOwnedCover(result) || result.cover_url) ? "hidden" : ""}`}>
+                                No cover
+                              </div>
+                              {/* Owned checkmark - inside image top right (like BookCard) */}
+                              {isOwned(result) && (
+                                <div className="absolute top-0.5 right-0.5 rounded-full bg-emerald-500 p-0.5">
+                                  <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                    <path
+                                      fillRule="evenodd"
+                                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                                      clipRule="evenodd"
+                                    />
+                                  </svg>
+                                </div>
+                              )}
+                              {/* In catalog but missing - amber circle with white eye */}
+                              {isInCatalogMissing(result) && (
+                                <div className="absolute top-0.5 right-0.5 rounded-full bg-amber-500 p-0.5" title="In catalog (watching)">
+                                  <svg className="w-3 h-3" viewBox="0 0 24 24" fill="white">
+                                    <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                                  </svg>
+                                </div>
+                              )}
+                            </button>
+                          </div>
 
                           {/* Main content - clickable to go to releases */}
                           <button
@@ -1256,13 +1519,13 @@ export default function ShelfmarkSearchDialog({
                                     {result.author}
                                   </button>
                                 )}
-                                {result.author && result.series_name && result.series_position && " · "}
-                                {result.series_name && result.series_position && (
+                                {result.author && result.series_name && result.series_position != null && " · "}
+                                {result.series_name && result.series_position != null && (
                                   <button
                                     type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      handleSeriesClick(result.series_name!, result.author);
+                                      handleSeriesClick(result.series_name!, result.author, result.series_id);
                                     }}
                                     className="text-emerald-400 hover:text-emerald-300 hover:underline"
                                   >
@@ -1274,6 +1537,7 @@ export default function ShelfmarkSearchDialog({
                             {/* Year and rating row */}
                             <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-slate-500">
                               {result.year && <span>{result.year}</span>}
+                              {result.isbn && <span className="font-mono text-slate-400">ISBN: {result.isbn}</span>}
                               {result.display_fields?.map((field, idx) => (
                                 <span key={idx} className="flex items-center gap-0.5">
                                   {field.icon === "star" && <span className="text-amber-400">★</span>}
@@ -1296,6 +1560,7 @@ export default function ShelfmarkSearchDialog({
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSelectedBook(result);
+                                setBookInfo(null);  // Clear old book info
                                 setView("info");
                               }}
                               className="rounded-full p-1.5 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors"
@@ -1347,115 +1612,176 @@ export default function ShelfmarkSearchDialog({
               </button>
 
               {/* Book info content */}
+              {(() => {
+                // Get matched book from our DB (provider-match)
+                const matched = getMatchedBook(selectedBook);
+                
+                // Display priority: search result > our DB > (get_book is test-only)
+                // Fill in missing search data from our DB
+                const displayYear = selectedBook.year 
+                  || (matched?.release_date ? new Date(matched.release_date).getFullYear() : null);
+                
+                // Rating/Readers: use search result (has formatted "3.8 (21)" style)
+                const ratingField = selectedBook.display_fields?.find(f => f.icon === "star");
+                const readersField = selectedBook.display_fields?.find(f => f.icon === "users");
+                
+                // Series: search result, fallback to our DB
+                const displaySeriesName = selectedBook.series_name || matched?.series_name;
+                const displaySeriesPosition = selectedBook.series_position ?? matched?.series_position;
+                const displaySeriesCount = selectedBook.series_count ?? matched?.series_count;
+                
+                // ISBN: search result, fallback to our DB (common case: search has none, we have it)
+                const displayIsbn = selectedBook.isbn || matched?.isbn;
+                
+                // Description: search result, fallback to our DB
+                const displayDescription = selectedBook.description || matched?.description;
+                
+                return (
               <div className="flex flex-col gap-6 lg:flex-row lg:gap-8">
                 {/* Cover - larger sizing like SM */}
                 <div className="flex justify-center lg:justify-start lg:self-start">
-                  {(bookDetailFull?.cover_url || selectedBook.cover_url) ? (
-                    <img
-                      src={bookDetailFull?.cover_url || selectedBook.cover_url || ""}
-                      alt=""
-                      className="max-h-[60vh] w-auto max-w-[432px] rounded-xl border border-slate-600 object-contain bg-slate-800 shadow-lg"
-                      onError={(e) => {
-                        e.currentTarget.style.display = "none";
-                        e.currentTarget.nextElementSibling?.classList.remove("hidden");
-                      }}
-                    />
-                  ) : null}
-                  <div className={`flex h-64 w-44 items-center justify-center rounded-xl border border-dashed border-slate-600 bg-slate-800/60 text-sm text-slate-500 ${(bookDetailFull?.cover_url || selectedBook.cover_url) ? "hidden" : ""}`}>
+                  {(() => {
+                    // Prefer our owned cover, then selectedBook (search result)
+                    const coverUrl = getOwnedCover(selectedBook) || selectedBook.cover_url;
+                    return coverUrl ? (
+                      <img
+                        src={coverUrl}
+                        alt=""
+                        className="max-h-[60vh] w-auto max-w-[432px] rounded-xl border border-slate-600 object-contain bg-slate-800 shadow-lg"
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                          e.currentTarget.nextElementSibling?.classList.remove("hidden");
+                        }}
+                      />
+                    ) : null;
+                  })()}
+                  <div className={`flex h-64 w-44 items-center justify-center rounded-xl border border-dashed border-slate-600 bg-slate-800/60 text-sm text-slate-500 ${(getOwnedCover(selectedBook) || selectedBook.cover_url) ? "hidden" : ""}`}>
                     No cover
                   </div>
                 </div>
 
                 {/* Metadata - compact layout */}
                 <div className="flex-1 space-y-3">
-                  {/* Loading indicator */}
-                  {detailLoading && !bookDetailFull && (
-                    <div className="flex items-center gap-2 text-sm text-slate-400">
-                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-400 border-t-transparent" />
-                      Loading details...
-                    </div>
-                  )}
-
-                  {/* Top row: Year, Rating, Readers - inline */}
+                  {/* Top row: Year, Rating, Readers - search result > our DB */}
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-300">
-                    {(bookDetailFull?.year || selectedBook.year) && (
-                      <span>{bookDetailFull?.year || selectedBook.year}</span>
+                    {displayYear && (
+                      <span>{displayYear}</span>
                     )}
-                    {(() => {
-                      const ratingField = bookDetailFull?.display_fields?.find(f => f.icon === "star") 
-                        || selectedBook.display_fields?.find(f => f.icon === "star");
-                      return ratingField ? (
-                        <span className="flex items-center gap-1">
-                          <span className="text-amber-400">★</span>
-                          <span>{ratingField.value}</span>
-                          <span className="text-slate-500">{ratingField.label}</span>
-                        </span>
-                      ) : null;
-                    })()}
-                    {(() => {
-                      const readersField = bookDetailFull?.display_fields?.find(f => f.icon === "users")
-                        || selectedBook.display_fields?.find(f => f.icon === "users");
-                      return readersField ? (
-                        <span className="flex items-center gap-1">
-                          <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
-                          </svg>
-                          <span>{readersField.value}</span>
-                          <span className="text-slate-500">{readersField.label}</span>
-                        </span>
-                      ) : null;
-                    })()}
+                    {ratingField && (
+                      <span className="flex items-center gap-1">
+                        <span className="text-amber-400">★</span>
+                        <span>{ratingField.value}</span>
+                        {ratingField.label && <span className="text-slate-500">{ratingField.label}</span>}
+                      </span>
+                    )}
+                    {readersField && (
+                      <span className="flex items-center gap-1">
+                        <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
+                        </svg>
+                        <span>{readersField.value}</span>
+                        <span className="text-slate-500">{readersField.label}</span>
+                      </span>
+                    )}
                   </div>
 
-                  {/* Series line - green, prominent, clickable */}
-                  {(bookDetailFull?.series_name || selectedBook.series_name) && (
+                  {/* Format badges - show all 4, highlight owned */}
+                  {(() => {
+                    const ownedFmts = new Set(getOwnedFormats(selectedBook) || []);
+                    return (
+                      <div className="flex flex-wrap gap-1.5">
+                        {Object.entries(FORMAT_BADGE_STYLES).map(([key, style]) => {
+                          const owned = ownedFmts.has(key);
+                          return (
+                            <span
+                              key={key}
+                              className={`rounded px-2 py-0.5 text-xs font-medium ${
+                                owned ? style.className : "bg-slate-700/50 text-slate-500"
+                              }`}
+                            >
+                              {style.label}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Series line - search > our DB */}
+                  {displaySeriesName && (
                     <button
                       type="button"
                       onClick={() => handleSeriesClick(
-                        bookDetailFull?.series_name || selectedBook.series_name!,
-                        bookDetailFull?.author || selectedBook.author
+                        displaySeriesName,
+                        selectedBook.author,
+                        selectedBook.series_id
                       )}
                       className="text-sm font-medium text-emerald-400 hover:text-emerald-300 hover:underline text-left"
                     >
                       {(() => {
-                        const seriesName = bookDetailFull?.series_name || selectedBook.series_name;
-                        const seriesPosition = bookDetailFull?.series_position ?? selectedBook.series_position;
-                        const seriesCount = bookDetailFull?.series_count ?? selectedBook.series_count;
-                        if (seriesPosition != null) {
+                        if (displaySeriesPosition != null) {
                           return (
-                            <>#{seriesPosition}{seriesCount ? ` of ${seriesCount}` : ""} in {seriesName}</>
+                            <>#{displaySeriesPosition}{displaySeriesCount ? ` of ${displaySeriesCount}` : ""} in {displaySeriesName}</>
                           );
                         }
-                        return seriesName;
+                        return displaySeriesName;
                       })()}
                     </button>
                   )}
 
-                  {/* Description - in a scrollable styled text box */}
-                  {(bookDetailFull?.description || selectedBook.description) && (
+                  {/* Description - search > our DB */}
+                  {displayDescription && (
                     <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 max-h-[480px] overflow-y-auto">
                       <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Description</div>
                       <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">
-                        {stripHtml(bookDetailFull?.description || selectedBook.description)}
+                        {stripHtml(displayDescription)}
                       </div>
                     </div>
                   )}
 
-                  {/* Bottom row: ISBN and View on HC - inline */}
+                  {/* TEST: Provider match data from our DB */}
+                  {(() => {
+                    const matched = getMatchedBook(selectedBook);
+                    if (!matched) {
+                      return (
+                        <div className="rounded-lg border border-cyan-700 bg-cyan-800/20 p-4">
+                          <div className="mb-2 text-xs font-medium uppercase tracking-wide text-cyan-500">TEST: Our DB (provider-match)</div>
+                          <div className="text-sm text-slate-400">No match found in our DB for this book</div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="rounded-lg border border-cyan-700 bg-cyan-800/20 p-4 max-h-[320px] overflow-y-auto">
+                        <div className="mb-2 text-xs font-medium uppercase tracking-wide text-cyan-500">TEST: Our DB (provider-match) - book_id={matched.book_id}</div>
+                        <div className="text-sm text-slate-300 space-y-1">
+                          <div><span className="text-cyan-400">is_owned:</span> {matched.is_owned ? "✓ Yes" : "No"}</div>
+                          <div><span className="text-cyan-400">formats:</span> {matched.formats.length > 0 ? matched.formats.join(", ") : "none"}</div>
+                          <div><span className="text-cyan-400">isbn:</span> {matched.isbn || "none"}</div>
+                          <div><span className="text-cyan-400">release_date:</span> {matched.release_date || "none"}</div>
+                          <div><span className="text-cyan-400">series:</span> {matched.series_name ? `#${matched.series_position ?? "?"} of ${matched.series_count ?? "?"} in ${matched.series_name}` : "none"}</div>
+                          <div><span className="text-cyan-400">rating:</span> {matched.rating != null ? matched.rating.toFixed(2) : "none"}</div>
+                          <div><span className="text-cyan-400">description:</span> {matched.description ? `${matched.description.length} chars` : "none"}</div>
+                          {matched.cover_path && <div><span className="text-cyan-400">cover_path:</span> {matched.cover_path}</div>}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Bottom row: ISBN (search > our DB) and View on source - inline */}
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-                    {(bookDetailFull?.isbn || selectedBook.isbn) && (
+                    {displayIsbn && (
                       <span className="text-slate-400">
-                        ISBN: <span className="font-mono text-slate-300">{bookDetailFull?.isbn || selectedBook.isbn}</span>
+                        ISBN: <span className="font-mono text-slate-300">{displayIsbn}</span>
                       </span>
                     )}
-                    {(bookDetailFull?.source_url || selectedBook.source_url) && (
+                    {selectedBook.source_url && (
                       <a
-                        href={bookDetailFull?.source_url || selectedBook.source_url || ""}
+                        href={selectedBook.source_url}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-emerald-400 hover:text-emerald-300 transition-colors"
                       >
-                        View on {bookDetailFull?.provider_display_name || (() => {
+                        View on {(() => {
                           const src = (selectedBook.source || "").toLowerCase();
                           if (src.includes("hardcover")) return "Hardcover";
                           if (src.includes("google")) return "Google Books";
@@ -1467,6 +1793,8 @@ export default function ShelfmarkSearchDialog({
                   </div>
                 </div>
               </div>
+                );
+              })()}
             </>
           )}
 
@@ -1486,34 +1814,39 @@ export default function ShelfmarkSearchDialog({
               </button>
 
               {/* Book info header */}
-              {(bookInfo || selectedBook) && (
+              {(bookInfo || selectedBook) && (() => {
+                const matched = selectedBook ? getMatchedBook(selectedBook) : null;
+                return (
                 <div className="mb-5 rounded-xl border border-slate-700 bg-slate-800 p-4">
                   <div className="flex gap-4">
-                    {/* Cover */}
-                    {(bookDetailFull?.cover_url || bookInfo?.cover_url || selectedBook?.cover_url) ? (
-                      <img
-                        src={bookDetailFull?.cover_url || bookInfo?.cover_url || selectedBook?.cover_url || ""}
-                        alt=""
-                        className="h-32 w-24 shrink-0 rounded border border-slate-600 object-cover bg-slate-700"
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                          e.currentTarget.nextElementSibling?.classList.remove("hidden");
-                        }}
-                      />
-                    ) : null}
-                    <div className={`flex h-32 w-24 shrink-0 items-center justify-center rounded border border-slate-600 bg-slate-700 text-xs text-slate-500 ${(bookDetailFull?.cover_url || bookInfo?.cover_url || selectedBook?.cover_url) ? "hidden" : ""}`}>
+                    {/* Cover - prefer owned cover */}
+                    {(() => {
+                      const coverUrl = (selectedBook && getOwnedCover(selectedBook)) || bookInfo?.cover_url || selectedBook?.cover_url;
+                      return coverUrl ? (
+                        <img
+                          src={coverUrl}
+                          alt=""
+                          className="h-32 w-24 shrink-0 rounded border border-slate-600 object-cover bg-slate-700"
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                            e.currentTarget.nextElementSibling?.classList.remove("hidden");
+                          }}
+                        />
+                      ) : null;
+                    })()}
+                    <div className={`flex h-32 w-24 shrink-0 items-center justify-center rounded border border-slate-600 bg-slate-700 text-xs text-slate-500 ${((selectedBook && getOwnedCover(selectedBook)) || bookInfo?.cover_url || selectedBook?.cover_url) ? "hidden" : ""}`}>
                       No cover
                     </div>
 
                     {/* Info */}
                     <div className="min-w-0 flex-1">
-                      {/* Year and display fields (rating, readers) */}
+                      {/* Year and display fields (rating, readers) - from selectedBook */}
                       <div className="flex flex-wrap items-center gap-3 text-sm text-slate-400">
-                        {(bookDetailFull?.year || bookInfo?.year || selectedBook?.year) && (
-                          <span>{bookDetailFull?.year || bookInfo?.year || selectedBook?.year}</span>
+                        {(bookInfo?.year || selectedBook?.year) && (
+                          <span>{bookInfo?.year || selectedBook?.year}</span>
                         )}
-                        {/* Display fields - prefer full details */}
-                        {(bookDetailFull?.display_fields || selectedBook?.display_fields || []).map((field, idx) => (
+                        {/* Display fields - from selectedBook */}
+                        {(selectedBook?.display_fields || []).map((field, idx) => (
                           <span key={idx} className="flex items-center gap-1">
                             {field.icon === "star" && <span className="text-amber-400">★</span>}
                             {field.icon === "users" && <span>👥</span>}
@@ -1522,29 +1855,52 @@ export default function ShelfmarkSearchDialog({
                           </span>
                         ))}
                       </div>
+
+                      {/* Format badges - show all 4, highlight owned */}
+                      {selectedBook && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {(() => {
+                            const ownedFmts = new Set(getOwnedFormats(selectedBook) || []);
+                            return Object.entries(FORMAT_BADGE_STYLES).map(([key, style]) => {
+                              const owned = ownedFmts.has(key);
+                              return (
+                                <span
+                                  key={key}
+                                  className={`rounded px-2 py-0.5 text-xs font-medium ${
+                                    owned ? style.className : "bg-slate-700/50 text-slate-500"
+                                  }`}
+                                >
+                                  {style.label}
+                                </span>
+                              );
+                            });
+                          })()}
+                        </div>
+                      )}
                       
-                      {/* Series info - prefer full details (has series_count) */}
-                      {(bookDetailFull?.series_name || bookInfo?.series_name || selectedBook?.series_name) && (
+                      {/* Series info - from selectedBook (preserves search context) */}
+                      {(bookInfo?.series_name || selectedBook?.series_name) && (
                         <button
                           type="button"
                           onClick={() => handleSeriesClick(
-                            bookDetailFull?.series_name || bookInfo?.series_name || selectedBook?.series_name!,
-                            bookDetailFull?.author || bookInfo?.author || selectedBook?.author
+                            bookInfo?.series_name || selectedBook?.series_name!,
+                            bookInfo?.author || selectedBook?.author,
+                            bookInfo?.series_id || selectedBook?.series_id
                           )}
                           className="mt-1 text-sm text-emerald-400 hover:text-emerald-300 hover:underline text-left"
                         >
-                          #{bookDetailFull?.series_position ?? bookInfo?.series_position ?? selectedBook?.series_position ?? "?"}
-                          {bookDetailFull?.series_count ? ` of ${bookDetailFull.series_count}` : ""} in {bookDetailFull?.series_name || bookInfo?.series_name || selectedBook?.series_name}
+                          #{bookInfo?.series_position ?? selectedBook?.series_position ?? "?"}
+                          {selectedBook?.series_count ? ` of ${selectedBook.series_count}` : ""} in {bookInfo?.series_name || selectedBook?.series_name}
                         </button>
                       )}
                       
-                      {/* Description with expand/collapse - prefer full details */}
-                      {(bookDetailFull?.description || bookInfo?.description || selectedBook?.description) && (
+                      {/* Description with expand/collapse - from selectedBook */}
+                      {(bookInfo?.description || selectedBook?.description) && (
                         <div className="mt-2">
                           <p className={`text-sm text-slate-300 whitespace-pre-line ${descriptionExpanded ? "" : "line-clamp-3"}`}>
-                            {stripHtml(bookDetailFull?.description || bookInfo?.description || selectedBook?.description)}
+                            {stripHtml(bookInfo?.description || selectedBook?.description)}
                           </p>
-                          {((stripHtml(bookDetailFull?.description || bookInfo?.description || selectedBook?.description) || "").length > 200) && (
+                          {((stripHtml(bookInfo?.description || selectedBook?.description) || "").length > 200) && (
                             <button
                               type="button"
                               onClick={() => setDescriptionExpanded(!descriptionExpanded)}
@@ -1556,19 +1912,21 @@ export default function ShelfmarkSearchDialog({
                         </div>
                       )}
                       
-                      {/* ISBN and source link */}
+                      {/* ISBN and source link - prefer our DB for ISBN */}
                       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
-                        {(bookDetailFull?.isbn || bookInfo?.isbn || selectedBook?.isbn) && (
-                          <span className="text-slate-500">ISBN: {bookDetailFull?.isbn || bookInfo?.isbn || selectedBook?.isbn}</span>
+                        {(matched?.isbn || bookInfo?.isbn || selectedBook?.isbn) && (
+                          <span className="text-slate-500">
+                            ISBN: {matched?.isbn || bookInfo?.isbn || selectedBook?.isbn}
+                          </span>
                         )}
-                        {(bookDetailFull?.source_url || bookInfo?.source_url || selectedBook?.source_url) && (
+                        {(bookInfo?.source_url || selectedBook?.source_url) && (
                           <a
-                            href={bookDetailFull?.source_url || bookInfo?.source_url || selectedBook?.source_url || ""}
+                            href={bookInfo?.source_url || selectedBook?.source_url || ""}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-emerald-400 hover:text-emerald-300"
                           >
-                            View on {bookDetailFull?.provider_display_name || (() => {
+                            View on {(() => {
                               const prov = bookInfo?.provider || selectedBook?.source || "";
                               if (prov.toLowerCase().includes("hardcover")) return "Hardcover";
                               if (prov.toLowerCase().includes("google")) return "Google Books";
@@ -1581,7 +1939,8 @@ export default function ShelfmarkSearchDialog({
                     </div>
                   </div>
                 </div>
-              )}
+                );
+              })()}
 
               {/* Loading state */}
               {releasesMutation.isPending && (

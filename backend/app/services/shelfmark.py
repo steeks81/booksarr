@@ -43,6 +43,9 @@ _session_lock = asyncio.Lock()
 SESSION_EXPIRY_MINUTES = 60
 
 
+from backend.app.utils.path_sanitization import sanitize_for_filesystem as _sanitize_for_filesystem
+
+
 # --- Series Info Cache ---
 # In-memory cache for series info, keyed by "provider:book_id"
 # Survives until container restart
@@ -932,12 +935,20 @@ async def search(query: str, media_type: str = "ebook", series: str | None = Non
     logger.info("Shelfmark search completed: query=%r results=%d", query, len(results))
     
     # Determine error message based on rate limit detection
+    # Only show rate limit warning if we're actually near our limit (low headroom)
+    # Threshold: show warning when fewer than this many calls remain in the window
+    RATE_LIMIT_WARNING_HEADROOM = 15
     error_msg = None
     if possible_rate_limit:
-        if len(results) == 0:
-            error_msg = "No results - Hardcover may be rate limited. Try again in a few minutes."
+        limiter_stats = _hc_rate_limiter.get_stats()
+        headroom = limiter_stats.get("headroom", 999)
+        if headroom < RATE_LIMIT_WARNING_HEADROOM:
+            if len(results) == 0:
+                error_msg = "No results - Hardcover may be rate limited. Try again in a few minutes."
+            else:
+                error_msg = "Results may be incomplete (possible rate limit)"
         else:
-            error_msg = "Results may be incomplete (possible rate limit)"
+            logger.debug("Possible rate limit detected but headroom=%d, not showing warning", headroom)
     
     return ShelfmarkSearchResponse(
         query=query,
@@ -1883,7 +1894,8 @@ async def get_download_status() -> ShelfmarkStatusResponse:
     """
     Get current download status from Shelfmark.
     
-    Calls GET /api/status to get all downloads (in progress, complete, failed).
+    Calls GET /api/activity/snapshot to get downloads that match SM's activity view
+    (respects dismissals - dismissed items won't appear).
     """
     try:
         cookies = await _get_authenticated_session()
@@ -1892,16 +1904,20 @@ async def get_download_status() -> ShelfmarkStatusResponse:
     except ShelfmarkError as e:
         return ShelfmarkStatusResponse(in_progress=[], complete=[], failed=[], error=str(e))
     
-    status_url = f"{api_url.rstrip('/')}/api/status"
+    snapshot_url = f"{api_url.rstrip('/')}/api/activity/snapshot"
     
     try:
         async with httpx.AsyncClient(timeout=10.0, cookies=cookies) as client:
-            resp = await client.get(status_url)
+            resp = await client.get(snapshot_url)
             resp.raise_for_status()
-            data = resp.json()
+            snapshot = resp.json()
     except httpx.HTTPError as e:
         logger.error("Shelfmark status error: %s", e)
         return ShelfmarkStatusResponse(in_progress=[], complete=[], failed=[], error=str(e))
+    
+    # The snapshot has a 'status' field with the same structure as /api/status
+    # but filtered to exclude dismissed items
+    data = snapshot.get("status", {})
     
     # Helper to parse download item
     def parse_download_item(source_id: str, item: dict, status_type: str) -> ShelfmarkDownloadStatus:
@@ -2003,16 +2019,16 @@ async def initiate_download(
     }
     
     # Title - prefer book title over release title
-    if book_title:
-        payload["title"] = book_title
-    elif title:
-        payload["title"] = title
+    # Sanitize for filesystem (SM uses title in folder naming templates)
+    raw_title = book_title or title
+    if raw_title:
+        payload["title"] = _sanitize_for_filesystem(raw_title)
     
     # Author - prefer book author (First Last format) over release author (Last, First)
-    if book_author:
-        payload["author"] = book_author
-    elif author:
-        payload["author"] = author
+    # Sanitize for filesystem (SM uses author in folder naming templates)
+    raw_author = book_author or author
+    if raw_author:
+        payload["author"] = _sanitize_for_filesystem(raw_author)
     
     if format:
         payload["format"] = format
@@ -2022,18 +2038,17 @@ async def initiate_download(
         payload["preview"] = cover_url
     
     # Additional book metadata that SM may use for post-processing
-    if book_year:
-        payload["year"] = book_year
-    if book_provider:
-        payload["provider"] = book_provider
-    if book_provider_id:
-        payload["provider_id"] = book_provider_id
+    # Always include these fields (even if None) for logging visibility
+    payload["year"] = book_year
+    payload["provider"] = book_provider
+    payload["provider_id"] = book_provider_id
     
-    # Series metadata for folder naming templates
-    if series_name:
-        payload["series_name"] = series_name
-    if series_position is not None:
-        payload["series_position"] = series_position
+    # Series metadata for folder naming templates (also sanitized)
+    # Always include for logging visibility - SM handles None gracefully
+    payload["series_name"] = _sanitize_for_filesystem(series_name) if series_name else None
+    payload["series_position"] = series_position
+    
+    logger.debug("Download payload to SM: %s", payload)
     
     try:
         async with httpx.AsyncClient(timeout=30.0, cookies=cookies) as client:

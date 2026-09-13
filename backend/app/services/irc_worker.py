@@ -326,6 +326,7 @@ async def _attempt_connection(settings: dict[str, object]):
     server = str(settings["server"])
     port = int(settings["port"])
     use_tls = bool(settings["use_tls"])
+    tls_verify = bool(settings.get("tls_verify", True))
     nickname = str(settings["nickname"])
     username = str(settings["username"] or settings["nickname"])
     real_name = str(settings["real_name"] or settings["nickname"])
@@ -406,7 +407,12 @@ async def _attempt_connection(settings: dict[str, object]):
     )
 
     try:
-        ssl_context = ssl.create_default_context() if use_tls else None
+        ssl_context: ssl.SSLContext | None = None
+        if use_tls:
+            ssl_context = ssl.create_default_context()
+            if not tls_verify:
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
         reader, writer = await asyncio.wait_for(
             _open_tcp_connection(
                 server,
@@ -2555,10 +2561,7 @@ def _guess_author_title_from_filename(filename: str) -> tuple[str | None, str | 
     return None, stem
 
 
-def _sanitize_library_component(value: str) -> str:
-    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", value).strip()
-    sanitized = re.sub(r"\s+", " ", sanitized).rstrip(".")
-    return sanitized or "Unknown"
+from backend.app.utils.path_sanitization import sanitize_for_filesystem as _sanitize_library_component
 
 
 def _resolve_existing_author_dir_name(
@@ -2712,6 +2715,7 @@ async def _load_irc_settings() -> dict[str, object]:
         "server": settings.get("irc_server", ""),
         "port": int(settings.get("irc_port", "6697")),
         "use_tls": settings.get("irc_use_tls", "true").lower() == "true",
+        "tls_verify": settings.get("irc_tls_verify", "true").lower() == "true",
         "nickname": settings.get("irc_nickname", ""),
         "username": settings.get("irc_username", ""),
         "real_name": settings.get("irc_real_name", ""),

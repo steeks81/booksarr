@@ -16,6 +16,9 @@ import AuthorPortraitPickerDialog from "../components/AuthorPortraitPickerDialog
 import FixAuthorMatchDialog from "../components/FixAuthorMatchDialog";
 import MetadataInfoDialog from "../components/MetadataInfoDialog";
 import ShelfmarkSearchDialog from "../components/ShelfmarkSearchDialog";
+import ActivityOverlay from "../components/activity/ActivityOverlay";
+import type { BulkBook } from "../components/activity/ActivityOverlay";
+import { createSmartBulkSteps } from "../utils/smartBulkMode";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { compareTitles } from "../utils/titleSort";
 
@@ -87,6 +90,8 @@ export default function AuthorDetailPage() {
   const [linkedFilePopoverPath, setLinkedFilePopoverPath] = useState<string | null>(null);
   const [urlBookModal, setUrlBookModal] = useState<{ id: number; title: string } | null>(null);
   const [shelfmarkSearchQuery, setShelfmarkSearchQuery] = useState<{ title: string; authorName: string | null; series?: string; authorSearch?: string; authorHardcoverId?: number | null; seriesHardcoverId?: number | null } | null>(null);
+  const [shelfmarkBulkBooks, setShelfmarkBulkBooks] = useState<Array<{ id: number; title: string; authorName: string | null }> | null>(null);
+  const [activityOverlayBooks, setActivityOverlayBooks] = useState<BulkBook[] | null>(null);
   const [cacheProgress, setCacheProgress] = useState<{ current: number; total: number } | null>(null);
   const portraitMenuRef = useRef<HTMLDivElement | null>(null);
   const refreshMenuRef = useRef<HTMLDivElement | null>(null);
@@ -330,6 +335,19 @@ export default function AuthorDetailPage() {
     setSelectedBookIds(new Set());
   }, []);
 
+  const selectBooks = useCallback((bookIds: number[]) => {
+    if (bookIds.length === 0) {
+      // Empty array = clear selection
+      setSelectedBookIds(new Set());
+    } else {
+      setSelectedBookIds(prev => {
+        const next = new Set(prev);
+        bookIds.forEach(id => next.add(id));
+        return next;
+      });
+    }
+  }, []);
+
   const openIrcDownloads = useCallback(() => {
     if (selectedBooks.length === 0) return;
     navigate("/irc-downloads", {
@@ -343,6 +361,27 @@ export default function AuthorDetailPage() {
       },
     });
   }, [authorName, navigate, selectedBooks]);
+
+  const openShelfmarkBulk = useCallback(() => {
+    if (selectedBooks.length === 0) return;
+    setShelfmarkBulkBooks(selectedBooks.map((book) => ({
+      id: book.id,
+      title: book.title,
+      authorName: authorName,
+    })));
+  }, [authorName, selectedBooks]);
+
+  // New Activity overlay for bulk search (F13)
+  const openActivityOverlay = useCallback(() => {
+    if (selectedBooks.length === 0) return;
+    const smartSteps = createSmartBulkSteps(
+      selectedBooks,
+      authorName,
+      authorId,
+      author?.hardcover_id ?? null
+    );
+    setActivityOverlayBooks(smartSteps);
+  }, [authorName, authorId, author?.hardcover_id, selectedBooks]);
 
   const handleRemoveAuthor = useCallback(async () => {
     if (!author) return;
@@ -391,9 +430,31 @@ export default function AuthorDetailPage() {
                     </span>
                     <button
                       type="button"
-                      onClick={() => setShelfmarkSearchQuery({ title: "", authorName: s.primary_author_name, series: s.name, seriesHardcoverId: s.hardcover_id })}
+                      onClick={() => {
+                        // Open as series-level search
+                        setActivityOverlayBooks([{
+                          id: `series-${s.id}`,
+                          title: s.name,
+                          authorName: author.name,
+                          authorId: authorId,
+                          authorHardcoverId: author.hardcover_id ?? null,
+                          seriesName: s.name,
+                          seriesHardcoverId: s.hardcover_id ?? null,
+                          _searchField: 'series',
+                        }]);
+                      }}
                       className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
                       title="Search series in Shelfmark"
+                    >
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShelfmarkSearchQuery({ title: "", authorName: s.primary_author_name, series: s.name, seriesHardcoverId: s.hardcover_id })}
+                      className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors opacity-50"
+                      title="Search series in Shelfmark (OLD)"
                     >
                       <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -407,6 +468,8 @@ export default function AuthorDetailPage() {
                     authorId={authorId}
                     selectedBookIds={showBulkIrcControls ? selectedBookIds : undefined}
                     onToggleSelected={showBulkIrcControls ? toggleBookSelection : undefined}
+                    onSelectAll={showBulkIrcControls ? selectBooks : undefined}
+                    onOpenActivityOverlay={(b) => setActivityOverlayBooks([b])}
                     virtualized={false}
                   />
                 </div>
@@ -422,6 +485,8 @@ export default function AuthorDetailPage() {
                   authorId={authorId}
                   selectedBookIds={showBulkIrcControls ? selectedBookIds : undefined}
                   onToggleSelected={showBulkIrcControls ? toggleBookSelection : undefined}
+                  onSelectAll={showBulkIrcControls ? selectBooks : undefined}
+                  onOpenActivityOverlay={(b) => setActivityOverlayBooks([b])}
                   virtualized={false}
                 />
               </div>
@@ -437,6 +502,8 @@ export default function AuthorDetailPage() {
           authorId={authorId}
           selectedBookIds={showBulkIrcControls ? selectedBookIds : undefined}
           onToggleSelected={showBulkIrcControls ? toggleBookSelection : undefined}
+          onSelectAll={showBulkIrcControls ? selectBooks : undefined}
+          onOpenActivityOverlay={(b) => setActivityOverlayBooks([b])}
         />
       );
     }
@@ -446,14 +513,29 @@ export default function AuthorDetailPage() {
       return (
         <>
           {filteredSeries.map((s) => (
-            <SeriesGroup key={s.id} series={s} allBooks={sortedBooks} authorName={author.name} authorId={authorId} />
+            <SeriesGroup
+              key={s.id}
+              series={s}
+              allBooks={sortedBooks}
+              authorName={author.name}
+              authorId={authorId}
+              authorHardcoverId={author.hardcover_id}
+              onOpenActivityOverlay={setActivityOverlayBooks}
+            />
           ))}
           {standaloneBooks.length > 0 && (
             <div className="mb-8">
               <h3 className="text-lg font-semibold text-slate-200 mb-4">Standalone</h3>
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
                 {standaloneBooks.map((book) => (
-                  <BookCard key={book.id} book={book} authorName={author.name} />
+                  <BookCard 
+                    key={book.id} 
+                    book={book} 
+                    authorName={author.name}
+                    authorId={authorId}
+                    authorHardcoverId={author.hardcover_id}
+                    onOpenActivityOverlay={(b) => setActivityOverlayBooks([b])}
+                  />
                 ))}
               </div>
             </div>
@@ -465,7 +547,14 @@ export default function AuthorDetailPage() {
     return (
       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
         {sortedBooks.map((book) => (
-          <BookCard key={book.id} book={book} authorName={author.name} />
+          <BookCard 
+            key={book.id} 
+            book={book} 
+            authorName={author.name}
+            authorId={authorId}
+            authorHardcoverId={author.hardcover_id}
+            onOpenActivityOverlay={(b) => setActivityOverlayBooks([b])}
+          />
         ))}
       </div>
     );
@@ -693,6 +782,26 @@ export default function AuthorDetailPage() {
                             }).catch(() => {});
                           }
                           setShelfmarkSearchQuery({ title: "", authorName: null, authorSearch: author.name, authorHardcoverId: author.hardcover_id });
+                        }}
+                        className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                      >
+                        Search Shelfmark (OLD)
+                      </button>
+                    )}
+                    {settings?.shelfmark_enabled && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Open ActivityOverlay for author-level search (single page, author field)
+                          setActivityOverlayBooks([{
+                            id: `author-${authorId}`,
+                            title: author?.name || '', // Use author name as the "title" for display
+                            authorName: author?.name || null,
+                            authorId: authorId,
+                            authorHardcoverId: author?.hardcover_id ?? null,
+                            // Flag to indicate this is an author-level search
+                            _searchField: 'author',
+                          } as BulkBook]);
                         }}
                         className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
                       >
@@ -980,10 +1089,13 @@ export default function AuthorDetailPage() {
                                   title="Search Shelfmark"
                                   onClick={() => {
                                     setLinkedFilePopoverPath(null);
-                                    setShelfmarkSearchQuery({
+                                    setActivityOverlayBooks([{
+                                      id: `linked-${file.file_path}`,
                                       title: file.linked_book_title!,
                                       authorName: file.linked_author_name ?? null,
-                                    });
+                                      authorId: authorId,
+                                      authorHardcoverId: author?.hardcover_id ?? null,
+                                    }]);
                                   }}
                                   className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
                                 >
@@ -1039,14 +1151,17 @@ export default function AuthorDetailPage() {
                           type="button"
                           title="Search Shelfmark"
                           onClick={() => {
-                            setShelfmarkSearchQuery({
+                            setActivityOverlayBooks([{
+                              id: `unmatched-${searchTitle}`,
                               title: searchTitle,
                               authorName: author?.name ?? null,
-                            });
+                              authorId: authorId,
+                              authorHardcoverId: author?.hardcover_id,
+                            }]);
                           }}
                           className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
                         >
-                          {/* Search icon - always represents Shelfmark */}
+                          {/* Search icon - Shelfmark */}
                           <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                           </svg>
@@ -1135,6 +1250,27 @@ export default function AuthorDetailPage() {
               >
                 Download Selected From IRC
               </button>
+              {settings?.shelfmark_enabled && (
+                <button
+                  type="button"
+                  onClick={openShelfmarkBulk}
+                  disabled={selectedBooks.length === 0}
+                  className="rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Search SM (OLD)
+                </button>
+              )}
+              {settings?.shelfmark_enabled && (
+                <button
+                  type="button"
+                  onClick={openActivityOverlay}
+                  disabled={selectedBooks.length === 0}
+                  className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="New Activity overlay (F13)"
+                >
+                  Search SM
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1177,6 +1313,21 @@ export default function AuthorDetailPage() {
         authorSearch={shelfmarkSearchQuery?.authorSearch}
         open={shelfmarkSearchQuery !== null}
         onClose={() => setShelfmarkSearchQuery(null)}
+      />
+      <ShelfmarkSearchDialog
+        bookId={null}
+        title={shelfmarkBulkBooks?.[0]?.title ?? ""}
+        authorName={shelfmarkBulkBooks?.[0]?.authorName ?? null}
+        authorId={authorId}
+        bulkBooks={shelfmarkBulkBooks ?? undefined}
+        open={shelfmarkBulkBooks !== null}
+        onClose={() => setShelfmarkBulkBooks(null)}
+      />
+      <ActivityOverlay
+        books={activityOverlayBooks ?? []}
+        authorId={authorId}
+        open={activityOverlayBooks !== null}
+        onClose={() => setActivityOverlayBooks(null)}
       />
     </div>
   );

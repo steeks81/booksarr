@@ -52,6 +52,7 @@ export default function IrcSettingsPage() {
   const [server, setServer] = useState("");
   const [port, setPort] = useState("6697");
   const [useTls, setUseTls] = useState(true);
+  const [tlsVerify, setTlsVerify] = useState(true);
   const [nickname, setNickname] = useState("");
   const [username, setUsername] = useState("");
   const [realName, setRealName] = useState("");
@@ -70,6 +71,7 @@ export default function IrcSettingsPage() {
     setServer(settings.server);
     setPort(String(settings.port));
     setUseTls(settings.use_tls);
+    setTlsVerify(settings.tls_verify);
     setNickname(settings.nickname);
     setUsername(settings.username);
     setRealName(settings.real_name);
@@ -88,6 +90,7 @@ export default function IrcSettingsPage() {
       server: string;
       port: number;
       use_tls: boolean;
+      tls_verify: boolean;
       nickname: string;
       username: string;
       real_name: string;
@@ -103,6 +106,7 @@ export default function IrcSettingsPage() {
       server: server.trim(),
       port: Number(port) || 6697,
       use_tls: useTls,
+      tls_verify: tlsVerify,
       nickname: nickname.trim(),
       username: username.trim(),
       real_name: realName.trim(),
@@ -174,6 +178,16 @@ export default function IrcSettingsPage() {
               className="h-4 w-4 rounded border-slate-500 bg-slate-700 text-emerald-500 focus:ring-emerald-500"
             />
             Use TLS
+          </label>
+          <label className="flex items-center gap-3 text-sm text-slate-200">
+            <input
+              type="checkbox"
+              checked={tlsVerify}
+              onChange={(e) => setTlsVerify(e.target.checked)}
+              disabled={!useTls}
+              className="h-4 w-4 rounded border-slate-500 bg-slate-700 text-emerald-500 focus:ring-emerald-500 disabled:opacity-50"
+            />
+            Verify TLS certificate
           </label>
           <div>
             <div className="text-xs text-slate-400 mb-1">Server</div>

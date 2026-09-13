@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useBooks } from "../api/books";
+import { useSettings } from "../api/settings";
 import MobileBookList from "../components/MobileBookList";
 import SortControls from "../components/SortControls";
 import SearchBar from "../components/SearchBar";
 import ViewToggle from "../components/ViewToggle";
 import BookTable from "../components/BookTable";
 import BookCard from "../components/BookCard";
+import ShelfmarkSearchDialog from "../components/ShelfmarkSearchDialog";
 import { BookFilterDropdown, bookMatchesFilter, type BookFilterKey } from "../components/BookFilterDropdown";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useWindowVirtualRange } from "../hooks/useWindowVirtualRange";
+import ActivityOverlay from "../components/activity/ActivityOverlay";
+import type { BulkBook } from "../components/activity/ActivityOverlay";
 import type { Book } from "../types";
 import { compareTitles, titleSortInitial } from "../utils/titleSort";
 
@@ -154,6 +158,8 @@ export default function BooksPage() {
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"grid" | "table">("grid");
   const [selectedBookIds, setSelectedBookIds] = useState<Set<number>>(new Set());
+  const [activityOverlayBooks, setActivityOverlayBooks] = useState<BulkBook[] | null>(null);
+  const [shelfmarkBulkBooks, setShelfmarkBulkBooks] = useState<Array<{ id: number; title: string; authorName: string | null }> | null>(null);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [genreMenuOpen, setGenreMenuOpen] = useState(false);
   const [selectedIndexKey, setSelectedIndexKey] = useState<string | null>(null);
@@ -161,6 +167,7 @@ export default function BooksPage() {
   const filterMenuRef = useRef<HTMLDivElement | null>(null);
   const genreMenuRef = useRef<HTMLDivElement | null>(null);
   const { data: books, isLoading } = useBooks(sort, undefined, search);
+  const { data: settings } = useSettings();
   const isMobile = useIsMobile();
   const showBulkIrcControls = !isMobile && view === "table";
   const genreOptions = useMemo<GenreOption[]>(() => {
@@ -311,6 +318,26 @@ export default function BooksPage() {
     });
   }, [navigate, selectedBooks]);
 
+  const openActivityOverlay = useCallback(() => {
+    if (selectedBooks.length === 0) return;
+    setActivityOverlayBooks(selectedBooks.map((book) => ({
+      id: String(book.id),
+      title: book.title,
+      authorName: book.author_name ?? null,
+      authorId: book.author_id ?? null,
+      seriesName: book.series_info?.[0]?.series_name ?? null,
+    })));
+  }, [selectedBooks]);
+
+  const openShelfmarkBulk = useCallback(() => {
+    if (selectedBooks.length === 0) return;
+    setShelfmarkBulkBooks(selectedBooks.map((book) => ({
+      id: book.id,
+      title: book.title,
+      authorName: book.author_name ?? null,
+    })));
+  }, [selectedBooks]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -409,6 +436,26 @@ export default function BooksPage() {
               >
                 Download Selected From IRC
               </button>
+              {settings?.shelfmark_enabled && (
+                <button
+                  type="button"
+                  onClick={openShelfmarkBulk}
+                  disabled={selectedBooks.length === 0}
+                  className="rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Search SM (OLD)
+                </button>
+              )}
+              {settings?.shelfmark_enabled && (
+                <button
+                  type="button"
+                  onClick={openActivityOverlay}
+                  disabled={selectedBooks.length === 0}
+                  className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Search SM
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -446,6 +493,7 @@ export default function BooksPage() {
               showAuthor={true}
               selectedBookIds={showBulkIrcControls ? selectedBookIds : undefined}
               onToggleSelected={showBulkIrcControls ? toggleBookSelection : undefined}
+              onOpenActivityOverlay={(b) => setActivityOverlayBooks([b])}
               scrollRequest={scrollRequest}
             />
           </div>
@@ -463,6 +511,7 @@ export default function BooksPage() {
             books={filteredBooks}
             selectedBookIds={selectedBookIds}
             onToggleSelected={showBulkIrcControls ? toggleBookSelection : undefined}
+            onOpenActivityOverlay={(b) => setActivityOverlayBooks([b])}
             scrollRequest={scrollRequest}
             reserveIndexSpace={showTitleIndex}
           />
@@ -475,6 +524,21 @@ export default function BooksPage() {
           )}
         </>
       )}
+      <ShelfmarkSearchDialog
+        bookId={null}
+        title={shelfmarkBulkBooks?.[0]?.title ?? ""}
+        authorName={shelfmarkBulkBooks?.[0]?.authorName ?? null}
+        authorId={null}
+        bulkBooks={shelfmarkBulkBooks ?? undefined}
+        open={shelfmarkBulkBooks !== null}
+        onClose={() => setShelfmarkBulkBooks(null)}
+      />
+      <ActivityOverlay
+        books={activityOverlayBooks ?? []}
+        authorId={null}
+        open={activityOverlayBooks !== null}
+        onClose={() => setActivityOverlayBooks(null)}
+      />
     </div>
   );
 }
@@ -527,12 +591,14 @@ function VirtualBookGrid({
   books,
   selectedBookIds,
   onToggleSelected,
+  onOpenActivityOverlay,
   scrollRequest,
   reserveIndexSpace = false,
 }: {
   books: Book[];
   selectedBookIds: Set<number>;
   onToggleSelected?: (bookId: number) => void;
+  onOpenActivityOverlay?: (book: { id: string; title: string; authorName: string | null; authorId: number | null; authorHardcoverId?: number | null }) => void;
   scrollRequest: BookScrollRequest | null;
   reserveIndexSpace?: boolean;
 }) {
@@ -570,6 +636,7 @@ function VirtualBookGrid({
                     showAuthor={true}
                     selected={selectedBookIds.has(book.id)}
                     onToggleSelected={onToggleSelected ? () => onToggleSelected(book.id) : undefined}
+                    onOpenActivityOverlay={onOpenActivityOverlay}
                   />
                 ))}
               </div>

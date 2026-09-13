@@ -499,3 +499,114 @@ export async function prefetchSeriesStream(
   
   return receivedDone;
 }
+
+
+// --- Book Search Queue API ---
+// Backend queue for release searches - enables cross-session/cross-tab visibility
+
+export interface BookSearchBookInfo {
+  provider: string;
+  book_id: string;
+  title: string;
+  author: string | null;
+  cover_url: string | null;
+  year: number | null;
+  description: string | null;
+  series_name: string | null;
+  series_position: number | null;
+}
+
+export interface BookSearchEntry {
+  search_key: string;
+  book: BookSearchBookInfo;
+  status: 'pending' | 'fetching' | 'complete' | 'error';
+  releases: ShelfmarkRelease[] | null;
+  sources: string[] | null;
+  error: string | null;
+  queued_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface BookSearchResponse {
+  success: boolean;
+  search_key: string | null;
+  error: string | null;  // "already_queued" or error message
+}
+
+export interface BookSearchesResponse {
+  searches: BookSearchEntry[];
+}
+
+/**
+ * Queue a book for release search (returns immediately).
+ * Poll getBookSearches() to see status and releases.
+ */
+export async function queueBookSearch(book: {
+  provider: string;
+  book_id: string;
+  title: string;
+  author?: string | null;
+  cover_url?: string | null;
+  year?: number | null;
+  description?: string | null;
+  series_name?: string | null;
+  series_position?: number | null;
+}): Promise<BookSearchResponse> {
+  return fetchApi<BookSearchResponse>("/book-search", {
+    method: "POST",
+    body: JSON.stringify(book),
+  });
+}
+
+/**
+ * Get all book searches or filter by specific keys.
+ * Results ordered by queued_at (newest first).
+ */
+export async function getBookSearches(keys?: string[]): Promise<BookSearchesResponse> {
+  const url = keys && keys.length > 0
+    ? `/book-searches?keys=${encodeURIComponent(keys.join(","))}`
+    : "/book-searches";
+  return fetchApi<BookSearchesResponse>(url);
+}
+
+/**
+ * Hook for polling book searches.
+ */
+export function useBookSearches(enabled: boolean = true, refetchInterval: number = 2000) {
+  return useQuery({
+    queryKey: ["bookSearches"],
+    queryFn: () => getBookSearches(),
+    enabled,
+    refetchInterval: enabled ? refetchInterval : false,
+    staleTime: 0, // Always consider data stale to ensure polling works
+  });
+}
+
+/**
+ * Remove a book search from the queue.
+ */
+export async function removeBookSearch(searchKey: string): Promise<{ success: boolean }> {
+  return fetchApi<{ success: boolean }>(`/book-searches/${encodeURIComponent(searchKey)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Retry a book search to re-fetch releases.
+ * Only works for complete/error status.
+ */
+export async function retryBookSearch(searchKey: string): Promise<{ success: boolean }> {
+  return fetchApi<{ success: boolean }>(`/book-searches/${encodeURIComponent(searchKey)}/retry`, {
+    method: "POST",
+  });
+}
+
+/**
+ * Clear all completed/errored book searches.
+ */
+export async function clearBookSearches(): Promise<{ removed: number }> {
+  return fetchApi<{ removed: number }>("/book-searches/clear", {
+    method: "POST",
+  });
+}

@@ -200,6 +200,8 @@ function SelectionToggle({
   );
 }
 
+import type { BulkBook } from "./activity/ActivityOverlay";
+
 export default function BookTable({
   books,
   showAuthor = true,
@@ -207,6 +209,8 @@ export default function BookTable({
   authorId = null,
   selectedBookIds,
   onToggleSelected,
+  onSelectAll,
+  onOpenActivityOverlay,
   scrollRequest,
   virtualized = true,
 }: {
@@ -216,6 +220,8 @@ export default function BookTable({
   authorId?: number | null;
   selectedBookIds?: Set<number>;
   onToggleSelected?: (bookId: number) => void;
+  onSelectAll?: (bookIds: number[]) => void;
+  onOpenActivityOverlay?: (book: BulkBook) => void;
   scrollRequest?: { id: number; index: number; sequence: number } | null;
   virtualized?: boolean;
 }) {
@@ -374,7 +380,24 @@ export default function BookTable({
         <table className="w-full text-sm text-left">
           <thead className="border-b border-slate-700 bg-slate-800/80 text-[11px] uppercase tracking-wide text-slate-400">
             <tr>
-              {showSelectionColumn && <th className="px-4 py-2 w-10"></th>}
+              {showSelectionColumn && (
+                <th className="px-4 py-2 w-10">
+                  {onSelectAll && (
+                    <SelectionToggle
+                      selected={books.length > 0 && books.every(b => selectedBookIds?.has(b.id))}
+                      onToggle={() => {
+                        const allSelected = books.length > 0 && books.every(b => selectedBookIds?.has(b.id));
+                        if (allSelected) {
+                          onSelectAll([]); // Clear selection
+                        } else {
+                          onSelectAll(books.map(b => b.id));
+                        }
+                      }}
+                      label="Select all in this table"
+                    />
+                  )}
+                </th>
+              )}
               <th className="px-4 py-2 w-12"></th>
               <th className="px-4 py-2">
                 <button type="button" onClick={() => handleSort("title")} className="hover:text-slate-200 transition-colors">
@@ -441,8 +464,8 @@ export default function BookTable({
                         />
                       </td>
                     )}
-                    <td className="px-4 py-2">
-                      <div className={`w-8 h-12 rounded overflow-hidden flex-shrink-0 ${coverPresentation.frameClassName}`}>
+                    <td className="px-4 py-1">
+                      <div className={`relative w-12 h-16 rounded overflow-hidden flex-shrink-0 ${coverPresentation.frameClassName}`}>
                         {imgUrl ? (
                           coverPresentation.innerClassName ? (
                             <div className="flex h-full w-full items-center justify-center p-0.5">
@@ -466,6 +489,20 @@ export default function BookTable({
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-[8px] text-slate-500 p-0.5 text-center leading-tight">
                             {book.title.substring(0, 20)}
+                          </div>
+                        )}
+                        {/* Owned/Missing badge */}
+                        {book.is_owned ? (
+                          <div className="absolute top-0.5 right-0.5 rounded-full bg-emerald-500 p-0.5" title="Owned">
+                            <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                        ) : (
+                          <div className="absolute top-0.5 right-0.5 rounded-full bg-amber-500 p-0.5" title="Missing">
+                            <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="white">
+                              <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                            </svg>
                           </div>
                         )}
                       </div>
@@ -816,6 +853,25 @@ export default function BookTable({
                       authorName: menuAuthorName ?? contextAuthorName ?? null,
                       authorId: isFullBook(menuBook) ? menuBook.author_id : authorId,
                       series: menuBook.series_info?.[0]?.series_name ?? null,
+                    });
+                  }}
+                  className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                >
+                  Search Shelfmark (OLD)
+                </button>
+              )}
+              {settings?.shelfmark_enabled && onOpenActivityOverlay && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuBookId(null);
+                    setActionMenuPosition(null);
+                    onOpenActivityOverlay({
+                      id: String(menuBook.id),
+                      title: menuBook.title,
+                      authorName: menuAuthorName ?? contextAuthorName ?? null,
+                      authorId: isFullBook(menuBook) ? menuBook.author_id : authorId,
+                      seriesName: menuBook.series_info?.[0]?.series_name ?? null,
                     });
                   }}
                   className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-slate-800"

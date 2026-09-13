@@ -113,9 +113,13 @@ export default function MobileBookList({
                   <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-400">
                     {seriesLabel && <span className="rounded-full bg-slate-800 px-2 py-0.5">{seriesLabel}</span>}
                     {book.release_date && <span>{book.release_date.substring(0, 4)}</span>}
-                    {book.is_owned && (
+                    {book.is_owned ? (
                       <span className="rounded-full bg-emerald-500/12 px-2 py-0.5 text-emerald-300">
                         {book.owned_copy_count > 1 ? `${book.owned_copy_count} owned` : "Owned"}
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-amber-500/12 px-2 py-0.5 text-amber-300">
+                        Missing
                       </span>
                     )}
                   </div>

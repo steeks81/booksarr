@@ -9,6 +9,7 @@ import HiddenBooksPage from "./pages/HiddenBooksPage";
 import UnmatchedFilesPage from "./pages/UnmatchedFilesPage";
 import IrcSettingsPage from "./pages/IrcSettingsPage";
 import IrcDownloadsPage from "./pages/IrcDownloadsPage";
+import ActivityPage from "./pages/ActivityPage";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/authors/:id" element={<AuthorDetailPage />} />
         <Route path="/books" element={<BooksPage />} />
         <Route path="/books/hidden" element={<HiddenBooksPage />} />
+        <Route path="/activity" element={<ActivityPage />} />
         <Route path="/irc-downloads" element={<IrcDownloadsPage />} />
         <Route path="/settings" element={<Navigate to="/settings/api-keys" replace />} />
         <Route path="/settings/api-keys" element={<SettingsPage section="api-keys" />} />

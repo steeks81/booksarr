@@ -68,16 +68,20 @@ export default function BookCard({
   showAuthor = false,
   authorName = null,
   authorId = null,
+  authorHardcoverId = null,
   selected = false,
   onToggleSelected,
+  onOpenActivityOverlay,
 }: {
   book: BookLike;
   onClick?: () => void;
   showAuthor?: boolean;
   authorName?: string | null;
   authorId?: number | null;
+  authorHardcoverId?: number | null;
   selected?: boolean;
   onToggleSelected?: () => void;
+  onOpenActivityOverlay?: (book: { id: string; title: string; authorName: string | null; authorId: number | null; authorHardcoverId: number | null }) => void;
 }) {
   const refreshBook = useRefreshBook();
   const setBookVisibility = useSetBookVisibility();
@@ -446,6 +450,24 @@ export default function BookCard({
                     }}
                     className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
                   >
+                    Search Shelfmark (OLD)
+                  </button>
+                )}
+                {settings?.shelfmark_enabled && onOpenActivityOverlay && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeMenu();
+                      onOpenActivityOverlay({
+                        id: String(book.id),
+                        title: book.title,
+                        authorName: isFullBook(book) ? book.author_name : authorName,
+                        authorId: isFullBook(book) ? book.author_id : authorId,
+                        authorHardcoverId: authorHardcoverId,
+                      });
+                    }}
+                    className="flex w-full items-center whitespace-nowrap rounded-md px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-slate-800"
+                  >
                     Search Shelfmark
                   </button>
                 )}
@@ -465,7 +487,7 @@ export default function BookCard({
               document.body,
             )}
           </div>
-          {book.is_owned && <OwnedBadge count={book.owned_copy_count} />}
+          {book.is_owned ? <OwnedBadge count={book.owned_copy_count} /> : <MissingBadge />}
         </div>
         <div className="mt-2">
           <p className="text-sm font-medium text-slate-200 truncate group-hover:text-emerald-400 transition-colors">

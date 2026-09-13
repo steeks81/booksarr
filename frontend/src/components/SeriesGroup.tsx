@@ -2,20 +2,40 @@ import { useState } from "react";
 import type { SeriesInAuthor, BookInAuthor } from "../types";
 import BookCard from "./BookCard";
 import ShelfmarkSearchDialog from "./ShelfmarkSearchDialog";
+import type { BulkBook } from "./activity/ActivityOverlay";
 
 export default function SeriesGroup({
   series,
   allBooks,
   authorName,
   authorId,
+  authorHardcoverId,
+  onOpenActivityOverlay,
 }: {
   series: SeriesInAuthor;
   allBooks: BookInAuthor[];
   authorName: string;
   authorId: number;
+  authorHardcoverId?: number | null;
+  onOpenActivityOverlay?: (books: BulkBook[]) => void;
 }) {
   const ownedCount = series.books.filter((b) => b.is_owned).length;
   const [shelfmarkOpen, setShelfmarkOpen] = useState(false);
+
+  const handleOpenNewOverlay = () => {
+    if (!onOpenActivityOverlay) return;
+    // Open as a series-level search (single entry)
+    onOpenActivityOverlay([{
+      id: `series-${series.id}`,
+      title: series.name, // Display name
+      authorName: authorName,
+      authorId: authorId,
+      authorHardcoverId: authorHardcoverId ?? null,
+      seriesName: series.name,
+      seriesHardcoverId: series.hardcover_id ?? null,
+      _searchField: 'series',
+    }]);
+  };
 
   return (
     <div className="mb-8">
@@ -24,13 +44,25 @@ export default function SeriesGroup({
         <span className="text-sm text-slate-400">
           <span className="text-emerald-400">{ownedCount}</span> / {series.books.length} books
         </span>
+        {onOpenActivityOverlay && (
+          <button
+            type="button"
+            onClick={handleOpenNewOverlay}
+            className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
+            title="Search series in Shelfmark"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setShelfmarkOpen(true)}
           className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
-          title="Search series in Shelfmark"
+          title="Search series in Shelfmark (OLD)"
         >
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="h-4 w-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
         </button>
@@ -46,7 +78,13 @@ export default function SeriesGroup({
                   {Number.isInteger(sb.position) ? sb.position : sb.position.toFixed(1)}
                 </div>
               )}
-              <BookCard book={fullBook} authorName={authorName} authorId={authorId} />
+              <BookCard 
+                book={fullBook} 
+                authorName={authorName} 
+                authorId={authorId} 
+                authorHardcoverId={authorHardcoverId}
+                onOpenActivityOverlay={onOpenActivityOverlay ? (book) => onOpenActivityOverlay([book]) : undefined}
+              />
             </div>
           );
         })}

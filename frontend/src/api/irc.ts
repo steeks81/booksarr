@@ -27,6 +27,7 @@ export function useUpdateIrcSettings() {
       server?: string;
       port?: number;
       use_tls?: boolean;
+      tls_verify?: boolean;
       nickname?: string;
       username?: string;
       real_name?: string;

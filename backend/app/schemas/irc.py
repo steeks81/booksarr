@@ -16,6 +16,7 @@ class IrcSettingsResponse(BaseModel):
     server: str = ""
     port: int = 6697
     use_tls: bool = True
+    tls_verify: bool = True
     nickname: str = ""
     username: str = ""
     real_name: str = ""
@@ -34,6 +35,7 @@ class IrcSettingsUpdate(BaseModel):
     server: str | None = None
     port: int | None = None
     use_tls: bool | None = None
+    tls_verify: bool | None = None
     nickname: str | None = None
     username: str | None = None
     real_name: str | None = None

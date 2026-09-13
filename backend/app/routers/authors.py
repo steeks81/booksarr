@@ -2,7 +2,6 @@ import asyncio
 import errno
 import json
 import logging
-import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -1246,7 +1245,9 @@ async def search_author_portraits_route(author_id: int, db: AsyncSession = Depen
     )
 
 
+from backend.app.utils.path_sanitization import sanitize_for_filesystem
+
+
 def _sanitize_author_folder_name(value: str) -> str:
-    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", value).strip()
-    sanitized = re.sub(r"\s+", " ", sanitized).rstrip(".")
-    return sanitized or "Unknown Author"
+    """Sanitize author name for use in filesystem paths."""
+    return sanitize_for_filesystem(value, fallback="Unknown Author")

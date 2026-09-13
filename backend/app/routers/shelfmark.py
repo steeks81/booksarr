@@ -139,7 +139,7 @@ async def search(body: ShelfmarkSearchRequest, db: AsyncSession = Depends(get_db
     # If author search by name only, try to find hardcover_id in our DB
     if body.author and not author_hc_id:
         result = await db.execute(
-            select(Author.hardcover_id).where(Author.name == body.author)
+            select(Author.hardcover_id).where(Author.name == body.author, Author.hardcover_id.isnot(None)).limit(1)
         )
         db_author_id = result.scalar_one_or_none()
         if db_author_id:
@@ -149,7 +149,7 @@ async def search(body: ShelfmarkSearchRequest, db: AsyncSession = Depends(get_db
     # If series search by name only, try to find hardcover_id in our DB
     if body.series and not series_hc_id:
         result = await db.execute(
-            select(Series.hardcover_id).where(Series.name == body.series)
+            select(Series.hardcover_id).where(Series.name == body.series, Series.hardcover_id.isnot(None)).limit(1)
         )
         db_series_id = result.scalar_one_or_none()
         if db_series_id:
@@ -345,7 +345,6 @@ async def get_url():
     """
     url = await get_shelfmark_url()
     return {"url": url}
-
 
 
 # --- Releases and Download endpoints ---
